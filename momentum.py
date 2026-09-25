@@ -71,12 +71,14 @@ def batch_quotes(symbols):
 
 def load_universe(top=None):
     """S&P 500 constituents ordered by market cap, largest first (optionally top N)."""
-    symbols = [c["symbol"] for c in fmp("sp500-constituent")]
-    quotes = batch_quotes(symbols)
+    info = {c["symbol"]: c for c in fmp("sp500-constituent")}
+    quotes = batch_quotes(list(info))
     ranked = sorted(quotes.values(), key=lambda q: q.get("marketCap") or 0, reverse=True)
-    universe = [{"symbol": q["symbol"], "marketCap": q["marketCap"]} for q in ranked[:top]]
+    universe = [{"symbol": q["symbol"], "marketCap": q["marketCap"] or 0, "name": info[q["symbol"]].get("name", ""),
+                 "sector": info[q["symbol"]].get("sector", ""), "industry": info[q["symbol"]].get("subSector", "")}
+                for q in ranked[:top]]
     (DATA / "universe.json").write_text(json.dumps(universe, indent=2))
-    return [(u["symbol"], u["marketCap"] or 0) for u in universe]
+    return universe
 
 
 def cap_bucket(market_cap):
@@ -115,10 +117,47 @@ def price_series(history, quote):
     appended if its session is newer than the last close, otherwise it replaces
     that close (so an intraday quote is used while the market is open)."""
     quote_day = datetime.fromtimestamp(quote["timestamp"], NY).date().isoformat()
-    closes = [c for d, c in history if d <= quote_day]
+    closes = [(d, c) for d, c in history if d <= quote_day]
     if closes and history[-1][0] == quote_day:
         closes = closes[:-1]
-    return closes + [quote["price"]]
+    return closes + [(quote_day, quote["price"])]
+
+
+SESSION_OPEN, BAR_MINUTES, BARS_PER_DAY = 9 * 60 + 30, 5, 78
+
+
+def load_intraday(symbol):
+    """5-minute closes for the most recent session with bars, as
+    [date, first bar index, [closes...]] (index 0 = 9:30, 77 = 15:55; gaps are
+    None). Returns None if FMP has nothing recent."""
+    today = datetime.now(NY).date()
+    try:
+        rows = fmp("historical-chart/5min", symbol=symbol, **{"from": (today - timedelta(days=6)).isoformat(),
+                                                              "to": today.isoformat()})
+    except urllib.error.HTTPError:
+        return None
+    if not rows:
+        return None
+    day = max(r["date"][:10] for r in rows)
+    bars = {}
+    for r in rows:
+        if r["date"][:10] != day:
+            continue
+        hh, mm = int(r["date"][11:13]), int(r["date"][14:16])
+        i = (hh * 60 + mm - SESSION_OPEN) // BAR_MINUTES
+        if 0 <= i < BARS_PER_DAY:
+            bars[i] = round(r["close"], 4)
+    if not bars:
+        return None
+    lo, hi = min(bars), max(bars)
+    return [day, lo, [bars.get(i) for i in range(lo, hi + 1)]]
+
+
+def load_intraday_all(symbols):
+    """{ticker: intraday}, fetched with modest concurrency (one call per ticker)."""
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        out = dict(zip(symbols, ex.map(load_intraday, symbols)))
+    return {s: v for s, v in out.items() if v}
 
 
 def daily_log_returns(prices, lookback=LOOKBACK):
@@ -167,26 +206,31 @@ def load_returns(top=None):
 
 
 def load_prices(top=None):
-    """({ticker: up to 253 most recent prices ending at P_now}, {ticker: market cap}),
-    both in market-cap order."""
+    """({ticker: up to 253 most recent prices ending at P_now}, {ticker: market cap},
+    {ticker: {name, sector, industry}}, [the 253 session dates those prices sit on]),
+    all in market-cap order. Every ticker's prices align to the tail of the dates."""
     (DATA / "history").mkdir(parents=True, exist_ok=True)
-    caps = dict(load_universe(top))
+    universe = load_universe(top)
+    caps = {u["symbol"]: u["marketCap"] for u in universe}
+    meta = {u["symbol"]: {k: u[k] for k in ("name", "sector", "industry")} for u in universe}
     symbols = list(caps)
     with ThreadPoolExecutor(max_workers=8) as ex:
         histories = dict(zip(symbols, ex.map(load_history, symbols)))
     quotes = load_quotes(symbols)
 
-    out = {}
+    out, dates = {}, []
     for s in symbols:
         if s not in quotes or not histories[s]:
             continue
-        prices = price_series(histories[s], quotes[s])[-(LOOKBACK + 1):]
-        if len(prices) < 2:
+        series = price_series(histories[s], quotes[s])[-(LOOKBACK + 1):]
+        if len(series) < 2:
             continue
-        if len(prices) <= LOOKBACK:
-            print(f"note {s}: only {len(prices) - 1} sessions of history", file=sys.stderr)
-        out[s] = prices
-    return out, {s: caps[s] for s in out}
+        if len(series) <= LOOKBACK:
+            print(f"note {s}: only {len(series) - 1} sessions of history", file=sys.stderr)
+        out[s] = [c for _, c in series]
+        if len(series) > len(dates):
+            dates = [d for d, _ in series]
+    return out, {s: caps[s] for s in out}, {s: meta[s] for s in out}, dates
 
 
 def zscores(values):
@@ -219,6 +263,9 @@ def rank(returns, window="12m", w6=0.5, skip=0, vol_adjust=False, include=None, 
 
 SORT = ('<svg width=10 height=16 viewBox="0 0 10 16" aria-hidden=true><path class=up d="M5 1l4 5H1z"/>'
         '<path class=dn d="M5 15l4-5H1z"/></svg>')
+
+REFRESH = ('<svg width=20 height=20 viewBox="0 0 24 24" fill=none stroke=currentColor stroke-width=2.2 stroke-linecap=round '
+           'stroke-linejoin=round><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/></svg>')
 
 GEAR = ('<svg width=22 height=22 viewBox="0 0 24 24" fill=currentColor><path d="M19.4 13a7.5 7.5 0 0 0 0-2l2.1-1.6-2-3.5-2.5 1a7.4 '
         '7.4 0 0 0-1.7-1L15 3.3h-4l-.4 2.6a7.4 7.4 0 0 0-1.7 1l-2.5-1-2 3.5L6.6 11a7.5 7.5 0 0 0 0 2l-2.2 1.6 2 3.5 2.5-1a7.4 7.4 0 0 0 '
@@ -276,7 +323,40 @@ tr.qr td{padding:18px 0;border-bottom:0}  /* room above and below the divider */
 .ql{display:flex;align-items:center;gap:12px;color:var(--fg);opacity:.75;font-size:15px;font-weight:500;letter-spacing:.02em}
 .ql::before,.ql::after{content:"";flex:1;height:2px;background:currentColor;opacity:.8}
 .ql:empty::after{display:none}
-.asof{color:var(--muted);font-size:12px;text-align:center;margin:16px 0 0}
+.asof{color:var(--muted);font-size:12px;margin:2px 0 0}
+.hbtns{display:flex;gap:8px;flex:none}
+@keyframes spin{to{transform:rotate(360deg)}}
+.gear.busy svg{animation:spin .8s linear infinite}
+.gear.ok{color:var(--pos)}.gear.err{color:var(--neg)}
+tbody tr[data-t]{cursor:pointer}tbody tr[data-t]:active td{background:var(--chip)}
+/* Per-ticker detail view */
+.detail{position:fixed;inset:0;z-index:20;background:var(--bg);overflow:auto;padding:12px 16px calc(24px + env(safe-area-inset-bottom));
+  transform:translateY(100%);transition:transform .25s ease;visibility:hidden}
+.detail.on{transform:none;visibility:visible}
+.dtop{display:flex;align-items:center;gap:12px;margin-bottom:10px}
+.dtop .x{flex:none}
+.dname{font-size:14px;color:var(--muted);margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dtick{font-size:22px;font-weight:700;margin:0;letter-spacing:-.01em}
+.dsec{color:var(--muted);font-size:13px;margin:0 0 12px}
+.dprice{font-size:34px;font-weight:700;letter-spacing:-.02em;margin:0;font-variant-numeric:tabular-nums}
+.dchg{font-size:16px;font-weight:500;margin:2px 0 4px;font-variant-numeric:tabular-nums}
+.drank{color:var(--muted);font-size:14px;margin:0 0 12px}
+.chart{position:relative;margin:0 -4px}
+.chart svg{display:block;width:100%;height:220px;touch-action:none}
+.chart .ln{fill:none;stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+.chart .ar{opacity:.12}
+.chart .ref{stroke:var(--muted);stroke-width:1;stroke-dasharray:3 4;opacity:.7}
+.chart g[hidden]{display:none}  /* the hidden attribute alone does not hide SVG */
+.chart .hair{stroke:var(--fg);stroke-width:1;opacity:.5}
+.chart .dot{stroke:var(--bg);stroke-width:2}
+.chart text{fill:var(--muted);font-size:11px}
+.tip{position:absolute;top:2px;left:0;background:var(--sheet);border:1px solid var(--line);border-radius:8px;padding:4px 8px;font-size:12px;
+  white-space:nowrap;pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,.12);transform:translateX(-50%)}
+.tip b{font-variant-numeric:tabular-nums}
+.hz{display:flex;justify-content:space-between;align-items:baseline;margin:6px 0 8px;font-size:14px}
+.hz .hzc{font-weight:500;font-variant-numeric:tabular-nums}
+.hz .hzl{color:var(--muted)}
+.dnote{color:var(--muted);font-size:12px;margin:14px 0 0}
 /* Compact, non-modal settings panel: no dimming, the table stays visible and
    scrollable above it so rank moves can be watched while toggling. */
 .sheet{position:fixed;left:0;right:0;bottom:0;max-width:560px;margin:0 auto;background:var(--sheet);border-radius:18px 18px 0 0;
@@ -302,8 +382,12 @@ const $=id=>document.getElementById(id),b=document.body;
 // [ticker, cap bucket, daily log returns, change of the latest price vs the prior close]
 // [ticker, cap bucket, daily log returns, {d1: latest change vs prior close,
 //  d5: 5-trading-day log return ln(P_now / P_5 sessions ago)}]
-const R=DATA.map(([t,c,p])=>{const L=p.length;return[t,c,p.slice(1).map((v,i)=>Math.log(v/p[i])),
-  {d1:p[L-1]/p[L-2]-1,d5:L>5?Math.log(p[L-1]/p[L-6]):null}]});
+let DATA,META,DATES,INTRA,R,PX={};
+function setPayload(P){PAYLOAD=P;DATA=P.data;META=P.meta||{};DATES=P.dates||[];INTRA=P.intra||{};PX={};
+  R=DATA.map(([t,c,p])=>{const L=p.length;PX[t]=p;return[t,c,p.slice(1).map((v,i)=>Math.log(v/p[i])),
+    {d1:p[L-1]/p[L-2]-1,d5:L>5?Math.log(p[L-1]/p[L-6]):null}]});
+  $("asof").textContent="As of "+P.asOf;}
+setPayload(PAYLOAD);
 const store={get(k,d){try{const v=localStorage.getItem(k);return v===null?d:v}catch(e){return d}},set(k,v){try{localStorage.setItem(k,v)}catch(e){}}};
 function r2of(x){  // mirrors r_squared()
   const y=[0];for(const v of x)y.push(y[y.length-1]+v);
@@ -327,7 +411,7 @@ if(!S.wins.size)S.wins.add("12m");
 const save=()=>{store.set("theme",S.theme);store.set("caps",[...S.caps].join(","));store.set("wins",[...S.wins].join(","));store.set("vol",S.vol?"1":"0");store.set("r2",S.r2?"1":"0");store.set("skip",S.skip?"1":"0");store.set("disp",S.disp);store.set("today",S.today?"1":"0");store.set("dmode",S.dmode)};
 // Rank-move badges: after a settings change, rows whose rank moved show a
 // temporary ▲n / ▼n next to the ticker (CSS fades them out).
-let prevRank=null;
+let prevRank=null,lastRank={};
 function apply(){
   const skip=S.skip?SKIP:0,vol=S.vol,wins=["6m","12m"].filter(w=>S.wins.has(w));
   if(S.theme==="auto")delete document.documentElement.dataset.theme;else document.documentElement.dataset.theme=S.theme;
@@ -382,7 +466,8 @@ function apply(){
   const rk={};ranked.forEach(([t],i)=>rk[t]=i);
   const mv=t=>{if(!prevRank||!(t in prevRank))return"";const d=prevRank[t]-rk[t];
     return d?`<span class="mv ${d>0?"mv-up":"mv-dn"}">${d>0?"\\u25b2":"\\u25bc"}${Math.abs(d)}</span>`:""};
-  $("rows").innerHTML=n?order.map(([t,v,i])=>`<tr${line[i]?" class=q":""}><td>${mv(t)}${t}</td><td class=num style="color:${grad(i)}">${fmt(v,i)}</td>${S.today?day(chg[t]):""}</tr>`+
+  lastRank={};ranked.forEach(([t,v],i)=>lastRank[t]=[i,fmt(v,i)]);
+  $("rows").innerHTML=n?order.map(([t,v,i])=>`<tr data-t="${t}"${line[i]?" class=q":""}><td>${mv(t)}${t}</td><td class=num style="color:${grad(i)}">${fmt(v,i)}</td>${S.today?day(chg[t]):""}</tr>`+
     (line[i]?`<tr class=qr><td><div class=ql>${line[i]}</div></td>`+`<td><div class=ql></div></td>`.repeat(ncol-1)+`</tr>`:"")).join("")
     :`<tr><td colspan=${ncol} class=empty>${S.caps.size?"No stocks in the selected market caps.":"Select at least one market cap."}</td></tr>`;
   prevRank=rk;
@@ -419,27 +504,113 @@ const setOpen=o=>{b.classList.toggle("open",o);$("gear").setAttribute("aria-expa
   if(o)document.documentElement.style.setProperty("--sheet-h",$("sheet").offsetHeight+"px")};
 const close=()=>setOpen(false);
 $("gear").onclick=()=>setOpen(!b.classList.contains("open"));$("close").onclick=close;
-document.onkeydown=e=>{if(e.key==="Escape"){close();menuOpen(false)}};
+document.onkeydown=e=>{if(e.key==="Escape"){if(b.classList.contains("dopen"))closeDetail();else{close();menuOpen(false)}}};
+
+// Refresh: pull the latest published data.json (the GitHub Action rebuilds it
+// every few minutes during market hours) and re-rank in place; rows that moved
+// get the usual ▲/▼ badges.
+$("refresh").onclick=async()=>{const btn=$("refresh");if(btn.classList.contains("busy"))return;
+  btn.classList.add("busy");btn.classList.remove("ok","err");
+  try{const r=await fetch("data.json?_="+Date.now(),{cache:"no-store"});if(!r.ok)throw new Error(r.status);
+    const P=await r.json();const same=P.asOf===PAYLOAD.asOf;setPayload(P);apply();if(cur)showDetail(cur,true);
+    btn.classList.add("ok");btn.title=same?"Already up to date ("+P.asOf+")":"Updated "+P.asOf}
+  catch(e){btn.classList.add("err");btn.title="Refresh failed: "+e.message}
+  finally{btn.classList.remove("busy");setTimeout(()=>btn.classList.remove("ok","err"),1500)}};
+
+// Per-ticker view: tap a row. Horizons: 1D = today's 5-minute bars vs the prior
+// close; the rest are daily closes vs the first close in the window.
+const HZ={"1D":0,"1W":5,"1M":21,"3M":63,"6M":126,"1Y":252};
+let cur=null,hz=store.get("hz","1D");if(!(hz in HZ))hz="1D";
+const money=v=>v>=1000?v.toLocaleString(undefined,{maximumFractionDigits:2}):v.toFixed(2);
+const pct=v=>(v>=0?"+":"−")+Math.abs(v*100).toFixed(2)+"%";
+const sgnMoney=v=>(v>=0?"+":"−")+money(Math.abs(v));
+const fmtDate=d=>{const [y,m,dd]=d.split("-");return new Date(+y,m-1,+dd).toLocaleDateString(undefined,{month:"short",day:"numeric"})};
+const barTime=i=>{const m=570+i*5,h=Math.floor(m/60),mm=m%60;return`${(h+11)%12+1}:${String(mm).padStart(2,"0")}`};
+function series(t){  // -> {xs:[label...], ys:[price|null...], ref, refLabel, n(total slots)}
+  const p=PX[t];if(!p)return null;
+  if(hz==="1D"){const it=INTRA[t];if(!it)return null;const [day,start,cl]=it;
+    const ys=Array(BARS).fill(null);cl.forEach((v,i)=>ys[start+i]=v);
+    return{xs:ys.map((_,i)=>barTime(i)),ys,ref:p[p.length-2],refLabel:"prev close",label:fmtDate(day),n:BARS}}
+  const k=Math.min(HZ[hz],p.length-1),ys=p.slice(p.length-1-k),ds=DATES.slice(DATES.length-1-k);
+  return{xs:ds.map(fmtDate),ys,ref:ys[0],refLabel:fmtDate(ds[0]),label:fmtDate(ds[0])+" – "+fmtDate(ds[ds.length-1]),n:ys.length}}
+function drawChart(t){
+  const box=$("chart"),W=box.clientWidth||360,H=220,padT=22,padB=18,padL=4,padR=4,sr=series(t);
+  if(!sr){box.innerHTML=`<svg viewBox="0 0 ${W} ${H}"><text x="${W/2}" y="${H/2}" text-anchor="middle">No intraday data yet</text></svg>`;$("hzc").textContent="";return}
+  const vals=sr.ys.filter(v=>v!==null),last=vals[vals.length-1],up=last>=sr.ref;
+  let lo=Math.min(...vals,sr.ref),hi=Math.max(...vals,sr.ref);if(hi===lo){hi+=.5;lo-=.5}
+  const pad=(hi-lo)*.08;lo-=pad;hi+=pad;
+  const X=i=>padL+i/(sr.n-1)*(W-padL-padR),Y=v=>padT+(hi-v)/(hi-lo)*(H-padT-padB);
+  let d="",area="",pen=false,firstX=null,lastX=null;
+  sr.ys.forEach((v,i)=>{if(v===null){pen=false;return}const x=X(i),y=Y(v);d+=(pen?"L":"M")+x.toFixed(1)+" "+y.toFixed(1);pen=true;if(firstX===null)firstX=x;lastX=x});
+  if(firstX!==null)area=d.replace(/M/g,"L").replace(/^L/,"M")+`L${lastX.toFixed(1)} ${Y(lo).toFixed(1)}L${firstX.toFixed(1)} ${Y(lo).toFixed(1)}Z`;
+  const col=up?"var(--pos)":"var(--neg)",ry=Y(sr.ref);
+  // (SVG built through innerHTML: keep every attribute quoted, or "/>" is misparsed.)
+  box.innerHTML=`<svg viewBox="0 0 ${W} ${H}" id="csvg"><path class="ar" d="${area}" fill="${col}"/>
+<line class="ref" x1="0" x2="${W}" y1="${ry.toFixed(1)}" y2="${ry.toFixed(1)}"/>
+<text x="${W-padR}" y="${(ry-4).toFixed(1)}" text-anchor="end">${money(sr.ref)} ${sr.refLabel}</text>
+<text x="${padL}" y="14">${money(hi)}</text><text x="${padL}" y="${H-padB+13}">${money(lo)}</text>
+<text x="${W/2}" y="${H-2}" text-anchor="middle">${sr.label}</text>
+<path class="ln" d="${d}" stroke="${col}"/><g id="hover" hidden><line class="hair" y1="${padT}" y2="${H-padB}"/><circle class="dot" r="4" fill="${col}"/></g></svg><div class="tip" id="tip" hidden></div>`;
+  const chg=last/sr.ref-1;$("hzc").textContent=`${sgnMoney(last-sr.ref)} (${pct(chg)})`;$("hzc").style.color=col;
+  const svg=$("csvg"),hov=$("hover"),tip=$("tip");
+  const move=e=>{const r=svg.getBoundingClientRect(),fx=(e.clientX-r.left)/r.width*W;let i=Math.round((fx-padL)/(W-padL-padR)*(sr.n-1));
+    i=Math.max(0,Math.min(sr.n-1,i));let j=i,k=i;while(j>=0&&sr.ys[j]===null)j--;while(k<sr.n&&sr.ys[k]===null)k++;
+    if(j<0&&k>=sr.n)return;i=(j<0||(k<sr.n&&k-i<i-j))?k:j;const x=X(i),y=Y(sr.ys[i]);
+    hov.hidden=false;hov.querySelector("line").setAttribute("x1",x);hov.querySelector("line").setAttribute("x2",x);
+    const c=hov.querySelector("circle");c.setAttribute("cx",x);c.setAttribute("cy",y);
+    tip.hidden=false;tip.innerHTML=`${sr.xs[i]} <b>${money(sr.ys[i])}</b>`;tip.style.left=Math.max(50,Math.min(W-50,x))/W*100+"%"};
+  svg.onpointermove=move;svg.onpointerdown=move;svg.onpointerleave=()=>{hov.hidden=true;tip.hidden=true}}
+function showDetail(t,keep){cur=t;const p=PX[t],m=META[t]||["","",""],L=p.length,d1=p[L-1]-p[L-2];
+  $("dtick").textContent=t;$("dname").textContent=m[0];$("dsec").textContent=[m[1],m[2]].filter(Boolean).join(" · ");
+  $("dprice").textContent=money(p[L-1]);const c=$("dchg");c.textContent=`${sgnMoney(d1)} (${pct(d1/p[L-2])}) today`;c.style.color=d1>=0?"var(--pos)":"var(--neg)";
+  const lr=lastRank[t];$("drank").textContent=lr?`Rank #${lr[0]+1} of ${Object.keys(lastRank).length} · ${lr[1]} · ${$("sum").textContent}`:"Not in the current universe";
+  document.querySelectorAll("[data-hz]").forEach(x=>x.setAttribute("aria-pressed",x.dataset.hz===hz));$("hzl").textContent=hz;
+  drawChart(t);if(!keep){b.classList.add("dopen");$("detail").classList.add("on");$("dclose").focus()}}
+const closeDetail=()=>{b.classList.remove("dopen");$("detail").classList.remove("on");cur=null};
+$("rows").onclick=e=>{const tr=e.target.closest("tr[data-t]");if(tr)showDetail(tr.dataset.t)};
+$("dclose").onclick=closeDetail;
+document.querySelectorAll("[data-hz]").forEach(x=>x.onclick=()=>{hz=x.dataset.hz;store.set("hz",hz);if(cur)showDetail(cur,true)});
+addEventListener("resize",()=>{if(cur)drawChart(cur)});
 """
 
 
-def render_html(prices, caps, as_of):
+def build_payload(prices, caps, as_of, meta=None, dates=None, intra=None):
+    """Everything the page needs. It is embedded in the HTML and also written as
+    data.json so the page's refresh button can pull a newer build in place."""
+    return {"asOf": as_of, "data": [[s, cap_bucket(caps[s]), p] for s, p in prices.items()],
+            "meta": {s: [m["name"], m["sector"], m["industry"]] for s, m in (meta or {}).items()},
+            "dates": dates or [], "intra": intra or {}}
+
+
+def render_html(prices, caps, as_of, meta=None, dates=None, intra=None):
     """The page embeds each ticker's prices (not rounded returns) so the browser's
     scores match Python's exactly, plus its market-cap bucket."""
-    data = json.dumps([[s, cap_bucket(caps[s]), p] for s, p in prices.items()], separators=(",", ":"))
+    payload = json.dumps(build_payload(prices, caps, as_of, meta, dates, intra), separators=(",", ":"))
     buckets = [name for name, _ in CAP_BUCKETS]
-    consts = (f"const DATA={data},SKIP={SKIP},YEAR={TRADING_DAYS},WIN={json.dumps(WINDOWS)},"
-              f"BUCKETS={json.dumps(buckets)},PCTS=[95,75,50,25,5];")
+    consts = (f"let PAYLOAD={payload};const SKIP={SKIP},YEAR={TRADING_DAYS},WIN={json.dumps(WINDOWS)},"
+              f"BUCKETS={json.dumps(buckets)},PCTS=[95,75,50,25,5],BARS={BARS_PER_DAY};")
     cap_buttons = "".join(f"<button data-cap={n}>{n.title()}</button>" for n in buckets)
+    hz_buttons = "".join(f"<button data-hz={h}>{h}</button>" for h in ("1D", "1W", "1M", "3M", "6M", "1Y"))
     return f"""<!doctype html><html lang=en><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>Return Ranker</title><style>{CSS}</style></head><body><main>
-<header><div><h1>Return Ranker</h1><p class=sum id=sum></p></div><button class=gear id=gear aria-label=Settings aria-expanded=false aria-controls=sheet>{GEAR}</button></header>
+<header><div><h1>Return Ranker</h1><p class=sum id=sum></p><p class=asof id=asof></p></div><div class=hbtns>
+<button class=gear id=refresh aria-label="Refresh prices" title="Refresh prices">{REFRESH}</button>
+<button class=gear id=gear aria-label=Settings aria-expanded=false aria-controls=sheet>{GEAR}</button></div></header>
 <table id=tbl><thead><tr><th>Ticker</th><th id=colth class=num><button class=sortb id=colbtn aria-haspopup=menu aria-expanded=false aria-controls=dispmenu
  title="Tap to sort, long-press to change display" data-dir=""><span id=col>Ann. Log Return</span>{SORT}</button>
 <div class=menu id=dispmenu role=menu aria-label=Display hidden><button role=menuitemradio data-disp=raw>Raw</button><button role=menuitemradio data-disp=z>Z-score</button><button role=menuitemradio data-disp=pct>Percentile</button><button role=menuitemradio data-disp=rank>Rank</button></div></th>
 <th id=tday class=num hidden><button class=sortb id=sortday data-dir="" aria-label="Sort by today's change" title="Tap to sort, long-press for 5-day"><span id=daylbl>Today</span>{SORT}</button></th></tr></thead><tbody id=rows></tbody></table>
-<p class=asof>As of {as_of}</p></main>
+</main>
+<section class=detail id=detail role=dialog aria-modal=true aria-labelledby=dtick>
+<div class=dtop><button class=x id=dclose aria-label="Close">&#x2715;</button><div style="min-width:0"><p class=dtick id=dtick></p><p class=dname id=dname></p></div></div>
+<p class=dsec id=dsec></p>
+<p class=dprice id=dprice></p><p class=dchg id=dchg></p><p class=drank id=drank></p>
+<div class=hz><span class=hzl id=hzl></span><span class=hzc id=hzc></span></div>
+<div class=chart id=chart></div>
+<div class=seg role=group aria-label=Horizon style="margin-top:10px">{hz_buttons}</div>
+<p class=dnote>1D shows 5-minute bars for the latest session against the prior close; other horizons use daily closes and the latest price. Tap or drag the chart to read values.</p>
+</section>
 <section class=sheet id=sheet role=region aria-label=Settings>
 <div class=top><h2>Settings</h2><button class=x id=close aria-label="Close settings">&#x2715;</button></div>
 <div class=grid>
@@ -464,12 +635,13 @@ def main():
     ap.add_argument("--vol", action="store_true", help="divide by annualized std dev of daily log returns (same window)")
     ap.add_argument("--r2", action="store_true", help="multiply each window's score by the R² of its log-price trend")
     ap.add_argument("--z", action="store_true", help="show cross-sectional z-scores (blend z-scores each window first)")
-    ap.add_argument("--html", metavar="PATH", help="also write the ranking as a static HTML page")
+    ap.add_argument("--html", metavar="PATH", help="also write the ranking as a static HTML page (+ data.json)")
+    ap.add_argument("--no-intraday", action="store_true", help="skip the per-ticker intraday bars in --html")
     args = ap.parse_args()
     if not os.environ.get("FMP_API_KEY"):
         sys.exit("FMP_API_KEY is not set")
 
-    prices, caps = load_prices()
+    prices, caps, meta, dates = load_prices()
     returns = {s: daily_log_returns(p, len(p) - 1) for s, p in prices.items()}
     wanted = set(args.caps.split(","))
     include = {s for s, c in caps.items() if cap_bucket(c) in wanted}
@@ -479,7 +651,11 @@ def main():
         print(f"{i:>4}  {s:<6}  {r:>10.4f}")
     if args.html:
         as_of = datetime.now(NY).strftime("%b %-d, %Y %-I:%M %p %Z")
-        Path(args.html).write_text(render_html(prices, caps, as_of))
+        intra = {} if args.no_intraday else load_intraday_all(list(prices))
+        out = Path(args.html)
+        out.write_text(render_html(prices, caps, as_of, meta, dates, intra))
+        out.with_name("data.json").write_text(json.dumps(build_payload(prices, caps, as_of, meta, dates, intra),
+                                                         separators=(",", ":")))
 
 
 if __name__ == "__main__":

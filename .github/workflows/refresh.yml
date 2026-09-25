@@ -2,7 +2,7 @@ name: Refresh ranking
 
 on:
   schedule:
-    - cron: "*/15 13-21 * * 1-5"   # every 15 min around US market hours (UTC)
+    - cron: "*/10 13-21 * * 1-5"   # every 10 min around US market hours (UTC)
     - cron: "30 22 * * *"           # daily after-close refresh
   push:
     branches: [main]
