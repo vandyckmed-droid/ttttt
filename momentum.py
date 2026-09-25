@@ -39,6 +39,7 @@ from zoneinfo import ZoneInfo
 BASE = "https://financialmodelingprep.com/stable"
 LOOKBACK = 252
 SKIP = 21
+LAG = 21  # extra sessions published so the page can re-rank as of LAG sessions ago
 TRADING_DAYS = 252  # annualization factor
 WINDOWS = {"12m": LOOKBACK, "6m": 126}
 # Market-cap buckets (name, floor in USD), largest first. The S&P 500 may have
@@ -307,7 +308,7 @@ def load_prices(top=None):
     for s in symbols:
         if s not in quotes or not histories[s]:
             continue
-        series = price_series(histories[s], quotes[s])[-(LOOKBACK + 1):]
+        series = price_series(histories[s], quotes[s])[-(LOOKBACK + LAG + 1):]
         if len(series) < 2:
             continue
         if len(series) <= LOOKBACK:
@@ -412,6 +413,7 @@ body[data-tab=lab] #ranktab,body:not([data-tab=lab]) #lab{display:none}
 .tm .t.on{outline:2px solid var(--fg);outline-offset:-3px}
 .bkctl{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;margin-top:8px}
 .bkctl .seg{min-width:11em}
+.segsm button{font-size:12px;padding:5px 0}
 #bk{margin-top:4px}#bk tr.muted td{color:var(--muted)}#bk td{padding:9px 14px}#bk th{padding:8px 14px}
 .hmtip{position:absolute;z-index:3;background:var(--sheet);border:1px solid var(--line);border-radius:8px;padding:4px 8px;font-size:12px;
   white-space:nowrap;pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,.12);transform:translate(-50%,-110%)}
@@ -550,6 +552,11 @@ const save=()=>{store.set("theme",S.theme);store.set("idx",[...S.idx].join(","))
 // temporary ▲n / ▼n next to the ticker (CSS fades them out).
 let prevRank=null,lastRank={},labNames=[],lastScoreOf=null,lastPoolRaw=[];
 let bsize=store.get("bsize","w")==="r"?"r":"w";  // basket treemap tile size: weight, or risk share w·σ
+// basket treemap tile colour: score, rank change / score change over LAG sessions, 21D VolAdj return,
+// mean correlation with the rest of the basket, or risk contribution vs weight
+const BCOL={score:"Score",drank:"\\u0394Rank",dscore:"\\u0394Score",ret:"21D",corr:"Corr",risk:"Risk%"},LAG=21,CORRW=126;
+let bcol=store.get("bcol","score");if(!(bcol in BCOL))bcol="score";
+let lastPool=[],applyN=0,lagCache=null;
 const CW={"1M":21,"3M":63,"6M":126,"1Y":252};let cw=store.get("cw","3M");if(!(cw in CW))cw="3M";let lastCorr=null;
 let lw=store.get("lw","1M");if(!(lw in CW))lw="1M";  // cumulative heatmap window; 1M is daily, longer windows weekly
 let lv=store.get("lv","1")!=="0";  // heatmap cells: VolAdj of the running window (default) or raw cumulative return
@@ -611,7 +618,7 @@ function apply(){
     return d?`<span class="mv ${d>0?"mv-up":"mv-dn"}">${d>0?"\\u25b2":"\\u25bc"}${Math.abs(d)}</span>`:""};
   lastRank={};ranked.forEach(([t,v],i)=>lastRank[t]=[i,fmt(v,i)]);
   lastScoreOf=r=>{const c=wins.map(w=>score(r,WIN[w],skip,vol,S.r2));return c.includes(null)?null:c.reduce((a,v)=>a+v,0)/c.length};
-  lastPoolRaw=rows.map(([,c])=>c.reduce((a,v)=>a+v,0)/c.length).sort((a,c)=>a-c);
+  lastPoolRaw=rows.map(([,c])=>c.reduce((a,v)=>a+v,0)/c.length).sort((a,c)=>a-c);lastPool=pool;applyN++;
   $("rows").innerHTML=n?order.map(([t,v,i])=>`<tr data-t="${t}"${line[i]?" class=q":""}><td>${mv(t)}${t}</td><td class=num style="color:${grad(i)}">${fmt(v,i)}</td>${S.today?day(chg[t]):""}</tr>`+
     (line[i]?`<tr class=qr><td><div class=ql>${line[i]}</div></td>`+`<td><div class=ql></div></td>`.repeat(ncol-1)+`</tr>`:"")).join("")
     :`<tr><td colspan=${ncol} class=empty>${S.caps.size?"No stocks in the selected market caps.":"Select at least one market cap."}</td></tr>`;
@@ -692,17 +699,43 @@ function renderTreemap(rows){const box=$("tm");if(!box)return;const W=box.client
   if(!items.length){box.innerHTML="";return}
   const wsum=items.reduce((a,i)=>a+i.w,0),rsum=items.reduce((a,i)=>a+i.w*i.sd,0);
   for(const i of items){i.wshare=i.w/wsum;i.rshare=i.w*i.sd/rsum;i.size=bsize==="r"?i.rshare:i.wshare;i.a=i.size*W*H}
-  items.sort((a,c)=>c.a-a.a);const out=[];squarify(items,0,0,W,H,out);
-  // colour: where the score would sit in the current pool (same green→neutral→red scale as the table)
+  document.querySelectorAll("[data-bcol]").forEach(x=>x.setAttribute("aria-pressed",x.dataset.bcol===bcol));
+  // Score colour: where the score would sit in the current pool (same green→neutral→red scale as the table)
   const n=lastPoolRaw.length,pct=v=>{if(v===null||!n)return .5;let lo=0,hi=n;while(lo<hi){const mid=(lo+hi)>>1;if(lastPoolRaw[mid]<v)lo=mid+1;else hi=mid}return n>1?lo/n:.5};
-  const col=q=>{const end=q>=.5?"--pos":"--neg";return`color-mix(in oklab,var(${end}) ${Math.round(Math.sqrt(Math.abs(q-.5)*2)*100)}%,var(--chip))`};
-  box.innerHTML=out.map(i=>{const q=pct(i.score),lr=lastRank[i.t],small=i.w<8||i.h<8?" xs":"";
-    return`<div class="t${i.w<48||i.h<34?" xs":""}" data-t="${i.t}" style="left:${i.x}px;top:${i.y}px;width:${i.w}px;height:${i.h}px;background:${col(q)}"><b>${i.t}</b><small>${(100*i.size).toFixed(1)}%</small></div>`}).join("");
-  $("tmsub").textContent=`${items.length} of ${rows.length} names have data · tile size = ${bsize==="r"?"risk share w·σ (σ = trailing 1Y daily)":"weight, renormalised over these names"} · colour = score under the current settings`;
+  const colq=q=>{const end=q>=.5?"--pos":"--neg";return`color-mix(in oklab,var(${end}) ${Math.round(Math.sqrt(Math.abs(q-.5)*2)*100)}%,var(--chip))`};
+  // Other modes: a signed value per name, green positive / red negative, saturating at vmax
+  const colv=(v,vmax)=>v===null?"var(--chip)":`color-mix(in oklab,var(${v>=0?"--pos":"--neg"}) ${Math.round(Math.min(1,Math.abs(v)/vmax)*100)}%,var(--chip))`;
+  const rets=t=>{const p=PX[t];return p.slice(1).map((v,i)=>Math.log(v/p[i]))};
+  // ΔRank / ΔScore: the same scoring on the pool as it stood LAG sessions ago (cached per apply()).
+  if((bcol==="drank"||bcol==="dscore")&&(!lagCache||lagCache.n!==applyN)){const now=[],lag=[];
+    for(const [t,,r] of lastPool){const a=lastScoreOf(r),b=lastScoreOf(r.slice(0,r.length-LAG));if(a!==null)now.push([t,a]);if(b!==null)lag.push([t,b])}
+    const rk=arr=>{const o={};arr.sort((x,y)=>y[1]-x[1]).forEach(([t,v],i)=>o[t]=[i,v]);return o};lagCache={n:applyN,now:rk(now),lag:rk(lag)}}
+  // Corr / Risk%: daily log returns of these names over the trailing CORRW sessions (aligned on the latest close)
+  let cov=null;if(bcol==="corr"||bcol==="risk"){const L=Math.min(CORRW,...items.map(i=>PX[i.t].length-1)),X=items.map(i=>rets(i.t).slice(-L));
+    const mu=X.map(x=>x.reduce((a,v)=>a+v,0)/L);cov=X.map((x,a)=>X.map((y,b)=>{let s=0;for(let k=0;k<L;k++)s+=(x[k]-mu[a])*(y[k]-mu[b]);return s/(L-1)}))}
+  let desc,vmax=1,fmtv=v=>v.toFixed(2);
+  for(const i of items){const lg=lagCache&&lagCache.lag[i.t],nw=lagCache&&lagCache.now[i.t];i.v=null;i.lbl="";
+    if(bcol==="drank"){if(lg&&nw){i.v=lg[0]-nw[0];i.lbl=`rank ${nw[0]+1} (was ${lg[0]+1})`}}
+    else if(bcol==="dscore"){if(lg&&nw){i.v=nw[1]-lg[1];i.lbl=`score ${nw[1].toFixed(2)} (was ${lg[1].toFixed(2)})`}}
+    else if(bcol==="ret"){const v=volAdj(rets(i.t).slice(-LAG));i.v=v;i.lbl=v===null?"":`21D VolAdj ${(v>=0?"+":"−")+Math.abs(v).toFixed(2)}`}
+    else if(bcol==="corr"){const a=items.indexOf(i);let s=0;for(let b=0;b<items.length;b++)if(b!==a)s+=cov[a][b]/Math.sqrt(cov[a][a]*cov[b][b]);
+      const rho=items.length>1?s/(items.length-1):0;i.rho=rho;i.lbl=`mean ρ with the others ${rho.toFixed(2)}`}
+    else if(bcol==="risk"){const a=items.indexOf(i),w=items.map(x=>x.wshare);let pv=0,mc=0;for(let b=0;b<items.length;b++){mc+=w[b]*cov[a][b];for(let c=0;c<items.length;c++)pv+=w[b]*w[c]*cov[b][c]}
+      const rc=pv?w[a]*mc/pv:w[a];i.rc=rc;i.v=-Math.log(Math.max(1e-6,rc/w[a]));i.lbl=`risk contribution ${(100*rc).toFixed(1)}% vs weight ${(100*w[a]).toFixed(1)}%`}}
+  if(bcol==="drank"){vmax=Math.max(1,...items.map(i=>i.v===null?0:Math.abs(i.v)));desc=`rank change over the last ${LAG} sessions under the current settings (green = moved up, saturates at ±${vmax})`}
+  else if(bcol==="dscore"){vmax=Math.max(1e-9,...items.map(i=>i.v===null?0:Math.abs(i.v)));desc=`score change over the last ${LAG} sessions (green = improving, saturates at ±${vmax.toFixed(2)})`}
+  else if(bcol==="ret"){vmax=Math.max(1e-9,...items.map(i=>i.v===null?0:Math.abs(i.v)));desc=`21D vol-adjusted return Σr/(σ√N) (saturates at ±${vmax.toFixed(2)})`}
+  else if(bcol==="corr"){const mr=items.reduce((a,i)=>a+i.rho,0)/items.length;for(const i of items)i.v=mr-i.rho;vmax=Math.max(1e-9,...items.map(i=>Math.abs(i.v)));
+    desc=`mean correlation of daily returns with the other basket names over the trailing ${CORRW} sessions, against the basket average ρ̄ = ${mr.toFixed(2)} (red = more correlated than average, the same bet held again; saturates at ±${vmax.toFixed(2)})`}
+  else if(bcol==="risk"){vmax=Math.log(2);desc=`share of basket variance explained (w·Σw), relative to weight: red contributes more risk than its weight, green less (saturates at 2× / ½×)`}
+  else desc="score under the current settings, on the ranking's percentile scale";
+  items.sort((a,c)=>c.a-a.a);const out=[];squarify(items,0,0,W,H,out);
+  box.innerHTML=out.map(i=>`<div class="t${i.w<48||i.h<34?" xs":""}" data-t="${i.t}" style="left:${i.x}px;top:${i.y}px;width:${i.w}px;height:${i.h}px;background:${bcol==="score"?colq(pct(i.score)):colv(i.v,vmax)}"><b>${i.t}</b><small>${(100*i.size).toFixed(1)}%</small></div>`).join("");
+  $("tmsub").textContent=`${items.length} of ${rows.length} names have data · size = ${bsize==="r"?"risk share w·σ (σ = trailing 1Y daily)":"weight, renormalised over these names"} · colour = ${desc}`;
   box.onclick=e=>{const d=e.target.closest(".t");box.querySelectorAll(".t.on").forEach(x=>x.classList.remove("on"));const old=$("bksec").querySelector(".hmtip");if(old)old.remove();
     if(!d)return;d.classList.add("on");const i=items.find(x=>x.t===d.dataset.t),lr=lastRank[i.t];
     const tip=document.createElement("div");tip.className="hmtip";tip.style.position="static";tip.style.transform="none";tip.style.display="inline-block";tip.style.marginTop="6px";
-    tip.innerHTML=`<b>${i.t}</b> · weight ${(100*i.wshare).toFixed(1)}% · risk share ${(100*i.rshare).toFixed(1)}% · σ ${(i.sd*Math.sqrt(YEAR)*100).toFixed(0)}% ann. · score ${i.score===null?"n/a":i.score.toFixed(2)}${lr?` · rank #${lr[0]+1}`:" · not in current pool"}`;
+    tip.innerHTML=`<b>${i.t}</b> · weight ${(100*i.wshare).toFixed(1)}% · risk share ${(100*i.rshare).toFixed(1)}% · σ ${(i.sd*Math.sqrt(YEAR)*100).toFixed(0)}% ann. · score ${i.score===null?"n/a":i.score.toFixed(2)}${lr?` · rank #${lr[0]+1}`:" · not in current pool"}${i.lbl?` · <b>${i.lbl}</b>`:""}`;
     $("tmtip").innerHTML="";$("tmtip").appendChild(tip)};
   box.ondblclick=e=>{const d=e.target.closest(".t");if(d)showDetail(d.dataset.t)}}
 function renderBasket(){const el=$("bk");if(!el)return;
@@ -769,6 +802,7 @@ function renderCorr(names){const el=$("cm");if(!el)return;const W=CW[cw];
   lastCorr={use,C,ord}}
 document.querySelectorAll("[data-lw]").forEach(x=>x.onclick=()=>{lw=x.dataset.lw;store.set("lw",lw);renderLab()});
 document.querySelectorAll("[data-bsize]").forEach(x=>x.onclick=()=>{bsize=x.dataset.bsize;store.set("bsize",bsize);renderBasket()});
+document.querySelectorAll("[data-bcol]").forEach(x=>x.onclick=()=>{bcol=x.dataset.bcol;store.set("bcol",bcol);renderBasket()});
 addEventListener("resize",()=>{if(BASKET)renderTreemap(BASKET.rows)});
 document.querySelectorAll("[data-lv]").forEach(x=>x.onclick=()=>{lv=x.dataset.lv==="1";store.set("lv",lv?"1":"0");renderLab()});
 document.querySelectorAll("[data-cw]").forEach(x=>x.onclick=()=>{cw=x.dataset.cw;store.set("cw",cw);renderCorr(labNames.filter(t=>PX[t]))});
@@ -943,8 +977,9 @@ def render_html(prices, caps, as_of, meta=None, dates=None, intra=None):
 <p class=dnote>Rows and columns follow the dendrogram's optimal leaf order, so neighbours are the most correlated pairs; the tree on the left shows the average-linkage merges (further left = merged at a larger 1−ρ). Colour saturates at the 95th percentile of |ρ| off the diagonal. Tap a cell for ρ, a ticker for its chart.</p>
 <div id=bksec hidden><div class="labh labsec"><h2>Basket</h2><p id=bksub></p></div>
 <div class=bkctl><p class=dnote style="margin:0" id=tmsub></p><div class=seg role=group aria-label="Tile size"><button data-bsize=w>Weight</button><button data-bsize=r>Risk</button></div></div>
+<div class="seg segsm" role=group aria-label="Tile colour" style="margin-top:8px"><button data-bcol=score>Score</button><button data-bcol=drank>&Delta;Rank</button><button data-bcol=dscore>&Delta;Score</button><button data-bcol=ret>21D</button><button data-bcol=corr>Corr</button><button data-bcol=risk>Risk%</button></div>
 <div class=tm id=tm></div><div id=tmtip></div>
-<p class=dnote>Tap a tile for details, double-tap for its chart. Risk sizes tiles by weight × volatility: a volatile name takes a bigger share of the basket's risk than its weight suggests, a stable one a smaller share.</p>
+<p class=dnote>Tap a tile for details, double-tap for its chart. Size: Risk sizes tiles by weight × volatility, so a volatile name takes a bigger share of the basket's risk than its weight suggests. Colour: Score is the ranking score; ΔRank and ΔScore are the change over the last 21 sessions (is it still working?); 21D is the recent vol-adjusted return; Corr is how much a name moves with the rest of the basket (red = the same bet held again); Risk% is its share of basket variance against its weight.</p>
 <table id=bk></table>
 <p class=dnote>Weights are shares of the basket. Rank is the name's position in the current ranking (— if it is in the data but filtered out by Index/Universe, n/a if it is outside both indexes). Tap a ticker for its chart.</p></div></section>
 </main>
