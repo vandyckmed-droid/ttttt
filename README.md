@@ -17,10 +17,11 @@ Python 3.9+, stdlib only. Output: Rank, Ticker, 12m log return.
 - `--window 6m` uses the last 126 sessions instead of 252, annualized (× 252/126, or × 252/105 with skip).
 - `--window blend --w6 0.5` blends (the page's Blend with both 6M and 12M selected is 50/50) the two annualized scores: w6·score₆ₘ + (1 − w6)·score₁₂ₘ.
 - `--z` shows cross-sectional z-scores over the ranked stocks. With a blend, each window is z-scored first, then averaged.
+  Z-score pipeline per window: raw return → VolAdj → winsorize (1st/99th pct across stocks) → z-score → combine horizons.
   On the page, tap the value column header to sort (desc, asc, off) and long-press it for a Raw / Z-score / Percentile (100% = top) / Rank menu.
 - `--r2` multiplies each window's score by the R² of a straight-line fit to its log price over that window
   (Settings → × R²). Blends apply it per window before combining.
-- `--vol` divides by the annualized sample std dev (× √252) of the same daily log returns (Settings toggle on the page).
+- `--vol` uses VolAdj(W) = Σr / (SD(r)·√N) on the exact window's N daily log returns, numerator and denominator on the same observations (a same-window Sharpe-like ratio, no annualization). Settings → Volatility on the page.
 - `--skip` excludes the most recent 21 sessions and annualizes the 231-day window: ln(P_21 / P_252) × 252/231. On the web page this is the Settings toggle.
 - `--caps mega,large` limits the universe to market-cap buckets: Mega ≥ $200B, Large $10–200B, Mid $2–10B, Small < $2B.
   On the page these are the Universe buttons (multi-select). A bucket may be empty (the S&P 500 rarely has Small caps).
