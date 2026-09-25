@@ -215,6 +215,11 @@ th:nth-child(1),td:nth-child(1){width:4.2em}
 th:last-child,td:last-child{text-align:right}
 .pos{color:var(--pos)}.neg{color:var(--neg)}
 .empty{color:var(--muted);text-align:center!important;padding:28px}
+tr.q td{border-bottom:2px solid var(--muted)}
+td[data-q]{position:relative}
+td[data-q]::after{content:attr(data-q);position:absolute;left:50%;bottom:-9px;transform:translateX(-50%);z-index:1;
+  font-size:11px;font-weight:600;letter-spacing:.04em;line-height:16px;padding:0 6px;border-radius:8px;
+  color:var(--muted);background:var(--bg);border:1px solid var(--muted)}
 .asof{color:var(--muted);font-size:12px;text-align:center;margin:16px 0 0}
 .scrim{position:fixed;inset:0;background:rgba(0,0,0,.3);opacity:0;pointer-events:none;transition:opacity .2s}
 .sheet{position:fixed;left:0;right:0;bottom:0;max-width:560px;margin:0 auto;background:var(--sheet);border-radius:24px 24px 0 0;
@@ -263,7 +268,11 @@ function apply(){
   const f=r=>{let t=0;for(const w of wins){const v=score(r,WIN[w],skip,vol);if(v===null)return null;t+=v/wins.length}return t};
   const ranked=pool.map(([t,,r])=>[t,f(r)]).filter(x=>x[1]!==null).sort((a,c)=>c[1]-a[1]);
   const fmt=v=>(v>=0?"+":"\\u2212")+(vol?Math.abs(v).toFixed(2):(Math.abs(v)*100).toFixed(1)+"%");
-  $("rows").innerHTML=ranked.length?ranked.map(([t,v],i)=>`<tr><td>${i+1}</td><td>${t}</td><td class=${v>=0?"pos":"neg"}>${fmt(v)}</td></tr>`).join("")
+  // Percentile lines: the line labelled Pk sits below the stocks at or above the
+  // k-th percentile (e.g. P95 = top 5% above the line).
+  const n=ranked.length,q={};
+  for(const k of PCTS){const c=Math.round(n*(1-k/100));if(c>0&&c<n)q[c-1]="P"+k}
+  $("rows").innerHTML=n?ranked.map(([t,v],i)=>`<tr${q[i]?" class=q":""}><td>${i+1}</td><td${q[i]?" data-q="+q[i]:""}>${t}</td><td class=${v>=0?"pos":"neg"}>${fmt(v)}</td></tr>`).join("")
     :`<tr><td colspan=3 class=empty>${S.caps.size?"No stocks in the selected market caps.":"Select at least one market cap."}</td></tr>`;
 }
 document.querySelectorAll("[data-cap]").forEach(x=>x.onclick=()=>{const c=x.dataset.cap;S.caps.has(c)?S.caps.delete(c):S.caps.add(c);save();apply()});
@@ -284,7 +293,7 @@ def render_html(prices, caps, as_of):
     data = json.dumps([[s, cap_bucket(caps[s]), p] for s, p in prices.items()], separators=(",", ":"))
     buckets = [name for name, _ in CAP_BUCKETS]
     consts = (f"const DATA={data},SKIP={SKIP},YEAR={TRADING_DAYS},WIN={json.dumps(WINDOWS)},"
-              f"BUCKETS={json.dumps(buckets)};")
+              f"BUCKETS={json.dumps(buckets)},PCTS=[95,75,50,25,5];")
     cap_buttons = "".join(f"<button data-cap={n}>{n.title()}</button>" for n in buckets)
     return f"""<!doctype html><html lang=en><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
