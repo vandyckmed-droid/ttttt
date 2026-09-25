@@ -17,7 +17,7 @@ Python 3.9+, stdlib only. Output: Rank, Ticker, 12m log return.
 - `--window 6m` uses the last 126 sessions instead of 252, annualized (× 252/126, or × 252/105 with skip).
 - `--window blend --w6 0.5` blends (the page's Blend with both 6M and 12M selected is 50/50) the two annualized scores: w6·score₆ₘ + (1 − w6)·score₁₂ₘ.
 - `--z` shows cross-sectional z-scores over the ranked stocks. With a blend, each window is z-scored first, then averaged.
-  On the page, long-press the value column header for a Raw / Z-score / Percentile (100% = top) / Rank menu.
+  On the page, tap the value column header to sort (desc, asc, off) and long-press it for a Raw / Z-score / Percentile (100% = top) / Rank menu.
 - `--r2` multiplies each window's score by the R² of a straight-line fit to its log price over that window
   (Settings → × R²). Blends apply it per window before combining.
 - `--vol` divides by the annualized sample std dev (× √252) of the same daily log returns (Settings toggle on the page).
