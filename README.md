@@ -13,6 +13,15 @@ Minimal prototype: rank the ~100 largest S&P 500 stocks by raw 12-month log retu
 
 Python 3.9+, stdlib only. Output: Rank, Ticker, 12m log return.
 
+- Returns are summed daily log returns. `P_now` is the live quote, so it is intraday while the market is open.
+- `--skip` excludes the most recent 21 sessions: ln(P_21 / P_252). On the web page this is the Settings toggle.
+- `--html PATH` writes the page (both rankings; the toggle switches between them).
+
+## Web page
+
+https://vandyckmed-droid.github.io/ttttt/ — rebuilt by `.github/workflows/refresh.yml` every 15 min during
+US market hours and daily after close. Requires the repo secret `FMP_API_KEY`.
+
 ## Data (written to `data/`, git-ignored)
 
 - `universe.json` — S&P 500 constituents (`/stable/sp500-constituent`) ranked by market cap from `/stable/batch-quote`, top N kept
