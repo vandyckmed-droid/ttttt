@@ -18,11 +18,13 @@ Python 3.9+, stdlib only. Output: Rank, Ticker, 12m log return.
 - `--window blend --w6 0.5` blends (the page's Blend with both 6M and 12M selected is 50/50) the two annualized scores: w6·score₆ₘ + (1 − w6)·score₁₂ₘ.
 - `--z` shows cross-sectional z-scores over the ranked stocks. With a blend, each window is z-scored first, then averaged.
   On the page, Settings → Display switches the value column between Raw, Z (this), % (percentile, 100% = top) and Rank.
+- `--r2` multiplies each window's score by the R² of a straight-line fit to its log price over that window
+  (Settings → × R²). Blends apply it per window before combining.
 - `--vol` divides by the annualized sample std dev (× √252) of the same daily log returns (Settings toggle on the page).
 - `--skip` excludes the most recent 21 sessions and annualizes the 231-day window: ln(P_21 / P_252) × 252/231. On the web page this is the Settings toggle.
 - `--caps mega,large` limits the universe to market-cap buckets: Mega ≥ $200B, Large $10–200B, Mid $2–10B, Small < $2B.
   On the page these are the Universe buttons (multi-select). A bucket may be empty (the S&P 500 rarely has Small caps).
-- `--html PATH` writes the page. It embeds each ticker's recent prices for all ~500 constituents and scores/ranks in the browser, so the Settings toggles re-rank instantly. Divider lines labelled P95/P75/P50/P25/P5 mark the percentile cut-offs of the current ranking, and value text is coloured by percentile (green → neutral → red). Settings → Appearance switches Auto/Light/Dark. Settings → Today adds a sortable column with each stock's latest price change vs the prior close.
+- `--html PATH` writes the page. It embeds each ticker's recent prices for all ~500 constituents and scores/ranks in the browser, so the Settings toggles re-rank instantly. Divider lines labelled P95/P75/P50/P25/P5 mark the percentile cut-offs of the current ranking, and value text is coloured by percentile (green → neutral → red). Settings → Appearance switches Auto/Light/Dark. When a setting changes the ranking, moved rows briefly show ▲n/▼n next to the ticker. Settings → Today adds a sortable column with each stock's latest price change vs the prior close.
 
 ## Web page
 
