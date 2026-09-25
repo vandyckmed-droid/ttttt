@@ -216,11 +216,10 @@ th:last-child,td:last-child{text-align:right}
 .pos{color:var(--pos)}.neg{color:var(--neg)}
 .empty{color:var(--muted);text-align:center!important;padding:28px}
 tr.q td{border-bottom:0}
-tr.qr td{padding:4px 0;border-bottom:0}
+tr.qr td{padding:18px 0;border-bottom:0}  /* room above and below the divider */
 .ql{display:flex;align-items:center;gap:12px;color:var(--fg);opacity:.75;font-size:15px;font-weight:500;letter-spacing:.02em}
-.ql::before{content:"";width:calc(4.2 * 17px + 2px);flex:none}  /* 4.2em of the 17px rows, so the label lines up with the tickers */
-.ql::before,.ql::after{height:2px;border-radius:1px;background:currentColor;opacity:.8}
-.ql::after{content:"";flex:1}
+.ql::before,.ql::after{content:"";flex:1;height:2px;background:currentColor;opacity:.8}
+.ql:empty::after{display:none}
 .asof{color:var(--muted);font-size:12px;text-align:center;margin:16px 0 0}
 .scrim{position:fixed;inset:0;background:rgba(0,0,0,.3);opacity:0;pointer-events:none;transition:opacity .2s}
 .sheet{position:fixed;left:0;right:0;bottom:0;max-width:560px;margin:0 auto;background:var(--sheet);border-radius:24px 24px 0 0;
@@ -274,7 +273,7 @@ function apply(){
   const n=ranked.length,q={};
   for(const k of PCTS){const c=Math.round(n*(1-k/100));if(c>0&&c<n)q[c-1]="P"+k}
   $("rows").innerHTML=n?ranked.map(([t,v],i)=>`<tr${q[i]?" class=q":""}><td>${i+1}</td><td>${t}</td><td class=${v>=0?"pos":"neg"}>${fmt(v)}</td></tr>`+
-    (q[i]?`<tr class=qr><td colspan=3><div class=ql>${q[i]}</div></td></tr>`:"")).join("")
+    (q[i]?`<tr class=qr><td><div class=ql></div></td><td><div class=ql>${q[i]}</div></td><td><div class=ql></div></td></tr>`:"")).join("")
     :`<tr><td colspan=3 class=empty>${S.caps.size?"No stocks in the selected market caps.":"Select at least one market cap."}</td></tr>`;
 }
 document.querySelectorAll("[data-cap]").forEach(x=>x.onclick=()=>{const c=x.dataset.cap;S.caps.has(c)?S.caps.delete(c):S.caps.add(c);save();apply()});
