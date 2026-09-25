@@ -11,7 +11,7 @@ Data is stored under data/:
     data/history/<SYM>.csv    daily closes (date,close), ascending
     data/quotes.json          latest quote per symbol (kept separate from history)
 
-Usage:  FMP_API_KEY=... python3 momentum.py [--top 100] [--serve]
+Usage:  FMP_API_KEY=... python3 momentum.py [--top 100] [--html index.html]
 """
 import argparse
 import csv
@@ -19,7 +19,6 @@ import json
 import math
 import os
 import sys
-import time
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -131,54 +130,21 @@ th:last-child,td:last-child{{text-align:right}}
 <tbody>{rows}</tbody></table></body></html>"""
 
 
-def serve(top, refresh_minutes):
-    import threading
-    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
-    page = {"html": "<p>Loading&hellip; refresh in a few seconds.</p>"}
-
-    def refresh():
-        while True:
-            try:
-                results = rank(top)
-                as_of = datetime.now(NY).strftime("%Y-%m-%d %H:%M %Z")
-                page["html"] = render_html(results, as_of)
-                print(f"refreshed {len(results)} tickers at {as_of}", flush=True)
-            except Exception as e:  # keep serving the last good page
-                print(f"refresh failed: {e}", file=sys.stderr, flush=True)
-            time.sleep(refresh_minutes * 60)
-
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            body = page["html"].encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-    threading.Thread(target=refresh, daemon=True).start()
-    port = int(os.environ.get("PORT", 8000))
-    print(f"serving on :{port}", flush=True)
-    ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--top", type=int, default=100)
-    ap.add_argument("--serve", action="store_true", help="run a web server showing the ranking")
-    ap.add_argument("--refresh-minutes", type=int, default=15)
+    ap.add_argument("--html", metavar="PATH", help="also write the ranking as a static HTML page")
     args = ap.parse_args()
     if not os.environ.get("FMP_API_KEY"):
         sys.exit("FMP_API_KEY is not set")
 
-    if args.serve:
-        serve(args.top, args.refresh_minutes)
-        return
-
+    results = rank(args.top)
     print(f"{'Rank':>4}  {'Ticker':<6}  {'12m log return':>14}")
-    for i, (s, r) in enumerate(rank(args.top), 1):
+    for i, (s, r) in enumerate(results, 1):
         print(f"{i:>4}  {s:<6}  {r:>14.4f}")
+    if args.html:
+        as_of = datetime.now(NY).strftime("%Y-%m-%d %H:%M %Z")
+        Path(args.html).write_text(render_html(results, as_of))
 
 
 if __name__ == "__main__":
