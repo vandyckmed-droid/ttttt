@@ -404,6 +404,7 @@ body[data-tab=lab] #ranktab,body:not([data-tab=lab]) #lab{display:none}
 .cm .dg svg{position:absolute;inset:0;width:100%;height:100%}
 .cm .dg path{fill:none;stroke:var(--muted);stroke-width:1.2}
 .labsec{margin-top:26px}
+#bk{margin-top:4px}#bk tr.muted td{color:var(--muted)}#bk td{padding:9px 14px}#bk th{padding:8px 14px}
 .hmtip{position:absolute;z-index:3;background:var(--sheet);border:1px solid var(--line);border-radius:8px;padding:4px 8px;font-size:12px;
   white-space:nowrap;pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,.12);transform:translate(-50%,-110%)}
 header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:4px 0 12px}
@@ -507,7 +508,8 @@ const $=id=>document.getElementById(id),b=document.body;
 // [ticker, cap bucket, daily log returns, {d1: latest change vs prior close,
 //  d5: 5-trading-day log return ln(P_now / P_5 sessions ago)}]
 let DATA,META,DATES,INTRA,R,PX={};
-function setPayload(P){PAYLOAD=P;DATA=P.data;META=P.meta||{};DATES=P.dates||[];INTRA=P.intra||{};PX={};
+let BASKET=null;
+function setPayload(P){PAYLOAD=P;DATA=P.data;META=P.meta||{};DATES=P.dates||[];INTRA=P.intra||{};BASKET=P.basket||null;PX={};
   R=DATA.map(([t,c,p,ix])=>{const L=p.length;PX[t]=p;return[t,c,p.slice(1).map((v,i)=>Math.log(v/p[i])),
     {d1:p[L-1]/p[L-2]-1,d5:L>5?Math.log(p[L-1]/p[L-6]):null},ix||"500"]});
   $("asof").textContent="As of "+P.asOf;}
@@ -660,7 +662,19 @@ function renderLab(){const el=$("hm");if(!el)return;const W=CW[lw],step=W>21?5:1
     if(!c)return;c.classList.add("on");const t=c.dataset.t,i=+c.dataset.i,v=rows.find(r=>r[0]===t)[1][i];
     const tip=document.createElement("div");tip.className="hmtip";tip.innerHTML=`${t} · ${fmtDate(ds[i])} · <b>${p(v)}</b>`;
     tip.style.left=(c.offsetLeft+c.offsetWidth/2)+"px";tip.style.top=c.offsetTop+"px";el.appendChild(tip)};
-  renderCorr(names)}
+  renderCorr(names);renderBasket()}
+// ---- Basket: tickers + weights from basket.json, with each name's rank in the
+// current pool (ranks come from the last apply()).
+function renderBasket(){const el=$("bk");if(!el)return;
+  if(!BASKET||!BASKET.rows||!BASKET.rows.length){$("bksec").hidden=true;return}$("bksec").hidden=false;
+  const rows=BASKET.rows,n=Object.keys(lastRank).length,inPool=rows.filter(([t])=>t in lastRank).length;
+  $("bksub").textContent=`${rows.length} names · as of ${BASKET.asOf} · ${inPool} in the current pool of ${n}`;
+  const chg=Object.fromEntries(R.map(r=>[r[0],r[3].d1]));
+  const pc=v=>v==null?"":`<span class="${v>0?"up-c":v<0?"dn-c":"fl-c"}">${v>=0?"+":"−"}${Math.abs(v*100).toFixed(2)}%</span>`;
+  el.innerHTML=`<thead><tr><th>Ticker</th><th class=num>Weight</th><th class=num>Rank</th><th class=num>Today</th></tr></thead><tbody>`+
+    rows.map(([t,w])=>{const lr=lastRank[t],inU=t in PX;
+      return`<tr${inU?` data-t="${t}"`:""}${inU?"":' class=muted'}><td>${t}</td><td class=num>${w.toFixed(2)}%</td><td class=num>${lr?`#${lr[0]+1}`:inU?"—":"n/a"}</td><td class=num>${pc(chg[t])}</td></tr>`}).join("")+`</tbody>`;
+  el.onclick=e=>{const tr=e.target.closest("tr[data-t]");if(tr)showDetail(tr.dataset.t)}}
 // ---- Correlation clusters of the P95 names: Pearson correlation of daily
 // log returns over a window, distance = 1 - rho, average-linkage (UPGMA)
 // hierarchical clustering, rows arranged by optimal leaf ordering
@@ -835,7 +849,22 @@ def build_payload(prices, caps, as_of, meta=None, dates=None, intra=None):
     data.json so the page's refresh button can pull a newer build in place."""
     return {"asOf": as_of, "data": [[s, cap_bucket(caps[s]), p, (meta or {}).get(s, {}).get("index", "500")] for s, p in prices.items()],
             "meta": {s: [m["name"], m["sector"], m["industry"]] for s, m in (meta or {}).items()},
-            "dates": dates or [], "intra": intra or {}}
+            "dates": dates or [], "intra": intra or {}, "basket": load_basket()}
+
+
+BASKET_FILE = Path(__file__).parent / "basket.json"
+
+
+def load_basket():
+    """Optional basket.json next to this script: {"asOf": "...", "rows": [[ticker, weight%], ...]}.
+    Only tickers and weights are stored (no amounts); shown on the page's Lab tab."""
+    if not BASKET_FILE.exists():
+        return None
+    try:
+        return json.loads(BASKET_FILE.read_text())
+    except ValueError as e:
+        print(f"warning: basket.json ignored ({e})", file=sys.stderr)
+        return None
 
 
 def render_html(prices, caps, as_of, meta=None, dates=None, intra=None):
@@ -868,7 +897,10 @@ def render_html(prices, caps, as_of, meta=None, dates=None, intra=None):
 <div class=seg role=group aria-label="Correlation window" style="margin-bottom:10px"><button data-cw=1M>1M</button><button data-cw=3M>3M</button><button data-cw=6M>6M</button><button data-cw=1Y>1Y</button></div>
 <div class=cm id=cm></div>
 <div class=lg><span id=cmmin></span><span class=bar></span><span id=cmmax></span></div>
-<p class=dnote>Rows and columns follow the dendrogram's optimal leaf order, so neighbours are the most correlated pairs; the tree on the left shows the average-linkage merges (further left = merged at a larger 1−ρ). Colour saturates at the 95th percentile of |ρ| off the diagonal. Tap a cell for ρ, a ticker for its chart.</p></section>
+<p class=dnote>Rows and columns follow the dendrogram's optimal leaf order, so neighbours are the most correlated pairs; the tree on the left shows the average-linkage merges (further left = merged at a larger 1−ρ). Colour saturates at the 95th percentile of |ρ| off the diagonal. Tap a cell for ρ, a ticker for its chart.</p>
+<div id=bksec hidden><div class="labh labsec"><h2>Basket</h2><p id=bksub></p></div>
+<table id=bk></table>
+<p class=dnote>Weights are shares of the basket. Rank is the name's position in the current ranking (— if it is in the data but filtered out by Index/Universe, n/a if it is outside both indexes). Tap a ticker for its chart.</p></div></section>
 </main>
 <nav class=tabs aria-label=Views><button data-tab=rank aria-selected=true><span class=ico>&#9776;</span>Rank</button><button data-tab=lab aria-selected=false><span class=ico>&#9879;</span>Lab</button></nav>
 <section class=detail id=detail role=dialog aria-modal=true aria-labelledby=dtick>
