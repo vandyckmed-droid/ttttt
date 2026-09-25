@@ -11,7 +11,7 @@ Data is stored under data/:
     data/history/<SYM>.csv    daily closes (date,close), ascending
     data/quotes.json          latest quote per symbol (kept separate from history)
 
-Usage:  FMP_API_KEY=... python3 momentum.py [--top 100]
+Usage:  FMP_API_KEY=... python3 momentum.py [--top 100] [--serve]
 """
 import argparse
 import csv
@@ -19,6 +19,7 @@ import json
 import math
 import os
 import sys
+import time
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -89,15 +90,9 @@ def log_return_12m(history, quote):
     return math.log(quote["price"] / closes[base_idx])
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--top", type=int, default=100)
-    args = ap.parse_args()
-    if not os.environ.get("FMP_API_KEY"):
-        sys.exit("FMP_API_KEY is not set")
-
+def rank(top=100):
     (DATA / "history").mkdir(parents=True, exist_ok=True)
-    symbols = load_universe(args.top)
+    symbols = load_universe(top)
     with ThreadPoolExecutor(max_workers=8) as ex:
         histories = dict(zip(symbols, ex.map(load_history, symbols)))
     quotes = load_quotes(symbols)
@@ -111,10 +106,79 @@ def main():
             else:
                 print(f"skip {s}: fewer than {LOOKBACK} sessions of history", file=sys.stderr)
     results.sort(key=lambda x: x[1], reverse=True)
+    return results
+
+
+def render_html(results, as_of):
+    rows = "\n".join(
+        f"<tr><td>{i}</td><td>{s}</td><td class={'pos' if r >= 0 else 'neg'}>{r:.4f}</td></tr>"
+        for i, (s, r) in enumerate(results, 1)
+    )
+    return f"""<!doctype html><html><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>12M Return Ranking</title><style>
+body{{font:14px/1.4 system-ui,sans-serif;max-width:420px;margin:24px auto;padding:0 16px;background:#fff;color:#111}}
+table{{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}}
+th,td{{padding:4px 8px;border-bottom:1px solid #eee;text-align:left}}
+th:last-child,td:last-child{{text-align:right}}
+.pos{{color:#137333}}.neg{{color:#b3261e}}small{{color:#666}}
+@media (prefers-color-scheme:dark){{body{{background:#111;color:#eee}}th,td{{border-color:#333}}
+.pos{{color:#6dd58c}}.neg{{color:#f28b82}}small{{color:#999}}}}
+</style></head><body>
+<h2>12-month log return</h2>
+<small>Top {len(results)} S&amp;P 500 by market cap &middot; ln(P_now / P_252) &middot; updated {as_of}</small>
+<table><thead><tr><th>Rank</th><th>Ticker</th><th>12m log return</th></tr></thead>
+<tbody>{rows}</tbody></table></body></html>"""
+
+
+def serve(top, refresh_minutes):
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    page = {"html": "<p>Loading&hellip; refresh in a few seconds.</p>"}
+
+    def refresh():
+        while True:
+            try:
+                results = rank(top)
+                as_of = datetime.now(NY).strftime("%Y-%m-%d %H:%M %Z")
+                page["html"] = render_html(results, as_of)
+                print(f"refreshed {len(results)} tickers at {as_of}", flush=True)
+            except Exception as e:  # keep serving the last good page
+                print(f"refresh failed: {e}", file=sys.stderr, flush=True)
+            time.sleep(refresh_minutes * 60)
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = page["html"].encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    threading.Thread(target=refresh, daemon=True).start()
+    port = int(os.environ.get("PORT", 8000))
+    print(f"serving on :{port}", flush=True)
+    ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--top", type=int, default=100)
+    ap.add_argument("--serve", action="store_true", help="run a web server showing the ranking")
+    ap.add_argument("--refresh-minutes", type=int, default=15)
+    args = ap.parse_args()
+    if not os.environ.get("FMP_API_KEY"):
+        sys.exit("FMP_API_KEY is not set")
+
+    if args.serve:
+        serve(args.top, args.refresh_minutes)
+        return
 
     print(f"{'Rank':>4}  {'Ticker':<6}  {'12m log return':>14}")
-    for rank, (s, r) in enumerate(results, 1):
-        print(f"{rank:>4}  {s:<6}  {r:>14.4f}")
+    for i, (s, r) in enumerate(rank(args.top), 1):
+        print(f"{i:>4}  {s:<6}  {r:>14.4f}")
 
 
 if __name__ == "__main__":
