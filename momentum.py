@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rank S&P 500 stocks (filtered by market-cap bucket) by annualized log return.
+"""Rank S&P 500 and S&P MidCap 400 stocks (filtered by index and market-cap bucket).
 
     R_12m = ln(P_now / P_252)
 
@@ -69,14 +69,79 @@ def batch_quotes(symbols):
     return quotes
 
 
+SP400_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_400_companies"
+
+
+def load_sp400():
+    """S&P MidCap 400 constituents from Wikipedia's list (symbol, name, GICS sector,
+    GICS sub-industry), fetched at most once per New York day and cached in
+    data/sp400.json; the cache is used if Wikipedia is unreachable."""
+    from html.parser import HTMLParser
+    path = DATA / "sp400.json"
+    today = datetime.now(NY).date()
+    if path.exists() and datetime.fromtimestamp(path.stat().st_mtime, NY).date() == today:
+        return json.loads(path.read_text())
+
+    class Tables(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.tables, self.table, self.row, self.cell = [], None, None, None
+
+        def handle_starttag(self, tag, attrs):
+            attrs = dict(attrs)
+            if tag == "table":
+                self.table = {"id": attrs.get("id", ""), "rows": []}
+            elif tag == "tr" and self.table is not None:
+                self.row = []
+            elif tag in ("td", "th") and self.row is not None:
+                self.cell = ""
+
+        def handle_endtag(self, tag):
+            if tag in ("td", "th") and self.cell is not None:
+                self.row.append(self.cell.strip())
+                self.cell = None
+            elif tag == "tr" and self.row is not None:
+                self.table["rows"].append(self.row)
+                self.row = None
+            elif tag == "table" and self.table is not None:
+                self.tables.append(self.table)
+                self.table = None
+
+        def handle_data(self, data):
+            if self.cell is not None:
+                self.cell += data
+
+    try:
+        req = urllib.request.Request(SP400_URL, headers={"User-Agent": "ReturnRanker/1.0 (github.com/vandyckmed-droid/ttttt)"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            html = r.read().decode("utf-8")
+        parser = Tables()
+        parser.feed(html)
+        table = next(t for t in parser.tables if t["id"] == "constituents")
+        head = [h.lower() for h in table["rows"][0]]
+        col = {k: next(i for i, h in enumerate(head) if k in h) for k in ("symbol", "security", "sector", "sub-industry")}
+        rows = [{"symbol": r[col["symbol"]].replace(".", "-"), "name": r[col["security"]], "sector": r[col["sector"]],
+                 "industry": r[col["sub-industry"]]} for r in table["rows"][1:] if len(r) > max(col.values())]
+        if len(rows) < 350:
+            raise ValueError(f"only {len(rows)} S&P 400 rows parsed")
+        path.write_text(json.dumps(rows, indent=2))
+        return rows
+    except Exception as e:  # keep going with yesterday's list rather than dropping the index
+        print(f"warning: S&P 400 list not refreshed ({e})", file=sys.stderr)
+        return json.loads(path.read_text()) if path.exists() else []
+
+
 def load_universe(top=None):
-    """S&P 500 constituents ordered by market cap, largest first (optionally top N)."""
-    info = {c["symbol"]: c for c in fmp("sp500-constituent")}
+    """S&P 500 (FMP) plus S&P MidCap 400 (Wikipedia) constituents, ordered by
+    market cap, largest first (optionally top N). Each entry carries index
+    "500" or "400"; a ticker in both lists counts as 500."""
+    info = {c["symbol"]: {"name": c.get("name", ""), "sector": c.get("sector", ""), "industry": c.get("subSector", ""),
+                          "index": "500"} for c in fmp("sp500-constituent")}
+    for c in load_sp400():
+        info.setdefault(c["symbol"], {"name": c["name"], "sector": c["sector"], "industry": c["industry"], "index": "400"})
     quotes = batch_quotes(list(info))
     ranked = sorted(quotes.values(), key=lambda q: q.get("marketCap") or 0, reverse=True)
-    universe = [{"symbol": q["symbol"], "marketCap": q["marketCap"] or 0, "name": info[q["symbol"]].get("name", ""),
-                 "sector": info[q["symbol"]].get("sector", ""), "industry": info[q["symbol"]].get("subSector", "")}
-                for q in ranked[:top]]
+    universe = [{"symbol": q["symbol"], "marketCap": q["marketCap"] or 0, **info[q["symbol"]]} for q in ranked[:top]]
     (DATA / "universe.json").write_text(json.dumps(universe, indent=2))
     return universe
 
@@ -232,7 +297,7 @@ def load_prices(top=None):
     (DATA / "history").mkdir(parents=True, exist_ok=True)
     universe = load_universe(top)
     caps = {u["symbol"]: u["marketCap"] for u in universe}
-    meta = {u["symbol"]: {k: u[k] for k in ("name", "sector", "industry")} for u in universe}
+    meta = {u["symbol"]: {k: u[k] for k in ("name", "sector", "industry", "index")} for u in universe}
     symbols = list(caps)
     with ThreadPoolExecutor(max_workers=8) as ex:
         histories = dict(zip(symbols, ex.map(load_history, symbols)))
@@ -443,8 +508,8 @@ const $=id=>document.getElementById(id),b=document.body;
 //  d5: 5-trading-day log return ln(P_now / P_5 sessions ago)}]
 let DATA,META,DATES,INTRA,R,PX={};
 function setPayload(P){PAYLOAD=P;DATA=P.data;META=P.meta||{};DATES=P.dates||[];INTRA=P.intra||{};PX={};
-  R=DATA.map(([t,c,p])=>{const L=p.length;PX[t]=p;return[t,c,p.slice(1).map((v,i)=>Math.log(v/p[i])),
-    {d1:p[L-1]/p[L-2]-1,d5:L>5?Math.log(p[L-1]/p[L-6]):null}]});
+  R=DATA.map(([t,c,p,ix])=>{const L=p.length;PX[t]=p;return[t,c,p.slice(1).map((v,i)=>Math.log(v/p[i])),
+    {d1:p[L-1]/p[L-2]-1,d5:L>5?Math.log(p[L-1]/p[L-6]):null},ix||"500"]});
   $("asof").textContent="As of "+P.asOf;}
 setPayload(PAYLOAD);
 const store={get(k,d){try{const v=localStorage.getItem(k);return v===null?d:v}catch(e){return d}},set(k,v){try{localStorage.setItem(k,v)}catch(e){}}};
@@ -463,13 +528,14 @@ function score(r,win,skip,vol,r2){
   return r2?out*r2of(x):out;
 }
 function winsorize(col){if(col.length<3)return col;const s=[...col].sort((a,c)=>a-c),lo=s[Math.floor(WINSOR*(s.length-1))],hi=s[Math.floor((1-WINSOR)*(s.length-1))];return col.map(v=>Math.min(Math.max(v,lo),hi))}
-const S={caps:new Set(store.get("caps",BUCKETS.join(",")).split(",").filter(c=>BUCKETS.includes(c))),
+const S={idx:new Set(store.get("idx","500").split(",").filter(x=>x==="500"||x==="400")),
+  caps:new Set(store.get("caps",BUCKETS.join(",")).split(",").filter(c=>BUCKETS.includes(c))),
   wins:new Set(store.get("wins","12m").split(",").filter(w=>w in WIN)),vol:store.get("vol","0")==="1",r2:store.get("r2","0")==="1",skip:store.get("skip","0")==="1",disp:store.get("disp",store.get("z","0")==="1"?"z":"raw"),today:store.get("today","0")==="1",dmode:store.get("dmode","d1")==="d5"?"d5":"d1",sort:"",sortCol:"",
   theme:store.get("theme","auto")};
 if(!["auto","light","dark"].includes(S.theme))S.theme="auto";
 if(!["raw","z","pct","rank"].includes(S.disp))S.disp="raw";
-if(!S.wins.size)S.wins.add("12m");
-const save=()=>{store.set("theme",S.theme);store.set("caps",[...S.caps].join(","));store.set("wins",[...S.wins].join(","));store.set("vol",S.vol?"1":"0");store.set("r2",S.r2?"1":"0");store.set("skip",S.skip?"1":"0");store.set("disp",S.disp);store.set("today",S.today?"1":"0");store.set("dmode",S.dmode)};
+if(!S.wins.size)S.wins.add("12m");if(!S.idx.size)S.idx.add("500");
+const save=()=>{store.set("theme",S.theme);store.set("idx",[...S.idx].join(","));store.set("caps",[...S.caps].join(","));store.set("wins",[...S.wins].join(","));store.set("vol",S.vol?"1":"0");store.set("r2",S.r2?"1":"0");store.set("skip",S.skip?"1":"0");store.set("disp",S.disp);store.set("today",S.today?"1":"0");store.set("dmode",S.dmode)};
 // Rank-move badges: after a settings change, rows whose rank moved show a
 // temporary ▲n / ▼n next to the ticker (CSS fades them out).
 let prevRank=null,lastRank={},labNames=[];
@@ -481,17 +547,18 @@ function apply(){
   const skip=S.skip?SKIP:0,vol=S.vol,wins=["6m","12m"].filter(w=>S.wins.has(w));
   if(S.theme==="auto")delete document.documentElement.dataset.theme;else document.documentElement.dataset.theme=S.theme;
   document.querySelectorAll("[data-theme-opt]").forEach(x=>x.setAttribute("aria-pressed",x.dataset.themeOpt===S.theme));
+  document.querySelectorAll("[data-idx]").forEach(x=>x.setAttribute("aria-pressed",S.idx.has(x.dataset.idx)));
   document.querySelectorAll("[data-cap]").forEach(x=>x.setAttribute("aria-pressed",S.caps.has(x.dataset.cap)));
   document.querySelectorAll("[data-win]").forEach(x=>x.setAttribute("aria-pressed",S.wins.has(x.dataset.win)));
   document.querySelectorAll("[data-r2]").forEach(x=>x.setAttribute("aria-pressed",String(x.dataset.r2==="1")===String(S.r2)));
   document.querySelectorAll("[data-vol]").forEach(x=>x.setAttribute("aria-pressed",String(x.dataset.vol==="1")===String(vol)));
   document.querySelectorAll("[data-skip]").forEach(x=>x.setAttribute("aria-pressed",String(x.dataset.skip==="1")===String(S.skip)));
-  const pool=R.filter(([,c])=>S.caps.has(c));
+  const pool=R.filter(([,c,,,ix])=>S.idx.has(ix)&&S.caps.has(c));
   // Display: Raw value, Z-score (a blend z-scores each window first, as rank()
   // with zscore=True), percentile (100% = top) or rank position.
   const Z=S.disp==="z";
   document.querySelectorAll("[data-disp]").forEach(x=>x.setAttribute("aria-checked",x.dataset.disp===S.disp));
-  $("sum").textContent=[pool.length,wins.map(w=>parseInt(w)).join("/"),...(vol?["VOL"]:[]),...(S.r2?["R\\u00b2"]:[]),...(skip?["S"+SKIP]:[]),
+  $("sum").textContent=[pool.length+(S.idx.size===2?" (500+400)":S.idx.has("400")?" (400)":""),wins.map(w=>parseInt(w)).join("/"),...(vol?["VOL"]:[]),...(S.r2?["R\\u00b2"]:[]),...(skip?["S"+SKIP]:[]),
     ...({z:["Z"],pct:["%"],rank:["RANK"]}[S.disp]||[])].join(" \\u2022 ");
   document.querySelectorAll("[data-today]").forEach(x=>x.setAttribute("aria-pressed",String(x.dataset.today==="1")===String(S.today)));
   $("tbl").classList.toggle("today",S.today);$("tday").hidden=!S.today;if(!S.today&&S.sortCol==="day")S.sort="";if(!S.sort)S.sortCol="";
@@ -539,6 +606,7 @@ function apply(){
   labNames=ranked.slice(0,Math.round(n*0.05)).map(([t])=>t);renderLab();
 }
 document.querySelectorAll("[data-cap]").forEach(x=>x.onclick=()=>{const c=x.dataset.cap;S.caps.has(c)?S.caps.delete(c):S.caps.add(c);save();apply()});
+document.querySelectorAll("[data-idx]").forEach(x=>x.onclick=()=>{const c=x.dataset.idx;if(S.idx.has(c)){if(S.idx.size>1)S.idx.delete(c)}else S.idx.add(c);save();apply()});
 document.querySelectorAll("[data-win]").forEach(x=>x.onclick=()=>{const w=x.dataset.win;
   if(S.wins.has(w)){if(S.wins.size>1)S.wins.delete(w)}else S.wins.add(w);save();apply()});
 document.querySelectorAll("[data-theme-opt]").forEach(x=>x.onclick=()=>{S.theme=x.dataset.themeOpt;save();apply()});
@@ -749,7 +817,7 @@ function drawChart(t){
 function showDetail(t,keep){cur=t;
   if(getKey()&&!keep&&!(liveIntraCache[t]>Date.now()-6e4)){liveIntraCache[t]=Date.now();
     liveIntraday(t).then(it=>{if(it){INTRA[t]=it;if(cur===t)drawChart(t)}}).catch(()=>{})}const p=PX[t],m=META[t]||["","",""],L=p.length,d1=p[L-1]-p[L-2];
-  $("dtick").textContent=t;$("dname").textContent=m[0];$("dsec").textContent=[m[1],m[2]].filter(Boolean).join(" · ");
+  const ix=(R.find(x=>x[0]===t)||[])[4];$("dtick").textContent=t;$("dname").textContent=m[0];$("dsec").textContent=[ix?"S&P "+ix:"",m[1],m[2]].filter(Boolean).join(" · ");
   $("dprice").textContent=money(p[L-1]);const c=$("dchg");c.textContent=`${sgnMoney(d1)} (${pct(d1/p[L-2])}) today`;c.style.color=d1>=0?"var(--pos)":"var(--neg)";
   const lr=lastRank[t];$("drank").textContent=lr?`Rank #${lr[0]+1} of ${Object.keys(lastRank).length} · ${lr[1]} · ${$("sum").textContent}`:"Not in the current universe";
   document.querySelectorAll("[data-hz]").forEach(x=>x.setAttribute("aria-pressed",x.dataset.hz===hz));$("hzl").textContent=hz;
@@ -765,7 +833,7 @@ addEventListener("resize",()=>{if(cur)drawChart(cur)});
 def build_payload(prices, caps, as_of, meta=None, dates=None, intra=None):
     """Everything the page needs. It is embedded in the HTML and also written as
     data.json so the page's refresh button can pull a newer build in place."""
-    return {"asOf": as_of, "data": [[s, cap_bucket(caps[s]), p] for s, p in prices.items()],
+    return {"asOf": as_of, "data": [[s, cap_bucket(caps[s]), p, (meta or {}).get(s, {}).get("index", "500")] for s, p in prices.items()],
             "meta": {s: [m["name"], m["sector"], m["industry"]] for s, m in (meta or {}).items()},
             "dates": dates or [], "intra": intra or {}}
 
@@ -815,6 +883,7 @@ def render_html(prices, caps, as_of, meta=None, dates=None, intra=None):
 <section class=sheet id=sheet role=region aria-label=Settings>
 <div class=top><h2>Settings</h2><button class=x id=close aria-label="Close settings">&#x2715;</button></div>
 <div class=grid>
+<div class=full><p class=lbl>Index</p><div class=seg role=group aria-label=Index><button data-idx=500>S&amp;P 500</button><button data-idx=400>S&amp;P 400</button></div></div>
 <div class=full><p class=lbl>Universe</p><div class=seg role=group aria-label="Market cap">{cap_buttons}</div></div>
 <div><p class=lbl>Blend</p><div class=seg role=group aria-label=Blend><button data-win=6m>6M</button><button data-win=12m>12M</button></div></div>
 <div><p class=lbl>Skip</p><div class=seg role=group aria-label=Skip><button data-skip=0>None</button><button data-skip=1>{SKIP}</button></div></div>
@@ -831,6 +900,7 @@ def render_html(prices, caps, as_of, meta=None, dates=None, intra=None):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--caps", default="mega,large,mid,small", help="market-cap buckets to include (comma-separated)")
+    ap.add_argument("--index", default="500", help="indexes to include: 500, 400 or 500,400")
     ap.add_argument("--window", choices=[*WINDOWS, "blend"], default="12m", help="lookback window")
     ap.add_argument("--w6", type=float, default=0.5, help="6M weight for --window blend (12M gets 1 - w6)")
     ap.add_argument("--skip", action="store_true", help=f"skip the last {SKIP} sessions")
@@ -846,7 +916,8 @@ def main():
     prices, caps, meta, dates = load_prices()
     returns = {s: daily_log_returns(p, len(p) - 1) for s, p in prices.items()}
     wanted = set(args.caps.split(","))
-    include = {s for s, c in caps.items() if cap_bucket(c) in wanted}
+    idx = set(args.index.split(","))
+    include = {s for s, c in caps.items() if cap_bucket(c) in wanted and meta[s]["index"] in idx}
     ranked = rank(returns, args.window, args.w6, SKIP if args.skip else 0, args.vol, include, args.z, args.r2)
     print(f"{'Rank':>4}  {'Ticker':<6}  {'score':>10}")
     for i, (s, r) in enumerate(ranked, 1):
