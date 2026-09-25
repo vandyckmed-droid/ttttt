@@ -319,7 +319,7 @@ function score(r,win,skip,vol,r2){
   return r2?out*r2of(x):out;
 }
 const S={caps:new Set(store.get("caps",BUCKETS.join(",")).split(",").filter(c=>BUCKETS.includes(c))),
-  wins:new Set(store.get("wins","12m").split(",").filter(w=>w in WIN)),vol:store.get("vol","0")==="1",r2:store.get("r2","0")==="1",skip:store.get("skip","0")==="1",disp:store.get("disp",store.get("z","0")==="1"?"z":"raw"),today:store.get("today","0")==="1",dmode:store.get("dmode","d1")==="d5"?"d5":"d1",sort:"",
+  wins:new Set(store.get("wins","12m").split(",").filter(w=>w in WIN)),vol:store.get("vol","0")==="1",r2:store.get("r2","0")==="1",skip:store.get("skip","0")==="1",disp:store.get("disp",store.get("z","0")==="1"?"z":"raw"),today:store.get("today","0")==="1",dmode:store.get("dmode","d1")==="d5"?"d5":"d1",sort:"",sortCol:"",
   theme:store.get("theme","auto")};
 if(!["auto","light","dark"].includes(S.theme))S.theme="auto";
 if(!["raw","z","pct","rank"].includes(S.disp))S.disp="raw";
@@ -345,7 +345,8 @@ function apply(){
   $("sum").textContent=[pool.length,wins.map(w=>parseInt(w)).join("/"),...(vol?["VOL"]:[]),...(S.r2?["R\\u00b2"]:[]),...(skip?["S"+SKIP]:[]),
     ...({z:["Z"],pct:["%"],rank:["RANK"]}[S.disp]||[])].join(" \\u2022 ");
   document.querySelectorAll("[data-today]").forEach(x=>x.setAttribute("aria-pressed",String(x.dataset.today==="1")===String(S.today)));
-  $("tbl").classList.toggle("today",S.today);$("tday").hidden=!S.today;if(!S.today)S.sort="";$("sortday").dataset.dir=S.sort;
+  $("tbl").classList.toggle("today",S.today);$("tday").hidden=!S.today;if(!S.today&&S.sortCol==="day")S.sort="";if(!S.sort)S.sortCol="";
+  $("sortday").dataset.dir=S.sortCol==="day"?S.sort:"";$("colbtn").dataset.dir=S.sortCol==="val"?S.sort:"";
   $("daylbl").textContent=S.dmode==="d5"?"5D":"Today";
   $("sortday").setAttribute("aria-label",(S.dmode==="d5"?"Sort by 5-day log return":"Sort by today's change")+"; long-press to switch");
   $("col").innerHTML={z:"Z-score",pct:"Percentile",rank:"Rank"}[S.disp]||
@@ -372,9 +373,11 @@ function apply(){
   // them, and the percentile lines are shown only in rank order.
   const order=ranked.map((x,i)=>[...x,i]);
   // Missing values (short history) always sort last.
+  // Value column: rank order is already score-desc, so "asc" just reverses it.
+  if(S.sortCol==="val"&&S.sort==="asc")order.reverse();
   const cv=t=>chg[t]===null?(S.sort==="desc"?-Infinity:Infinity):chg[t];
-  if(S.sort)order.sort((a,c)=>S.sort==="desc"?cv(c[0])-cv(a[0]):cv(a[0])-cv(c[0]));
-  const line=S.sort?{}:q,ncol=S.today?3:2;
+  if(S.sortCol==="day"&&S.sort)order.sort((a,c)=>S.sort==="desc"?cv(c[0])-cv(a[0]):cv(a[0])-cv(c[0]));
+  const line=S.sort?{}:q,ncol=S.today?3:2;  // percentile lines only in rank order
   const day=d=>d===null?`<td class="num fl-c">\\u2014</td>`:`<td class="num ${d>0?"up-c":d<0?"dn-c":"fl-c"}">${d>=0?"+":"\\u2212"}${Math.abs(d*100).toFixed(2)}%</td>`;
   const rk={};ranked.forEach(([t],i)=>rk[t]=i);
   const mv=t=>{if(!prevRank||!(t in prevRank))return"";const d=prevRank[t]-rk[t];
@@ -400,10 +403,12 @@ function longPress(btn,onLong,onTap){let timer=null,longPressed=false;
   btn.onclick=e=>{if(longPressed){longPressed=false;e.preventDefault();return}if(onTap)onTap()};}
 // Today: tap cycles the sort (desc, asc, off); long-press switches today's
 // change <-> 5-day log return without sorting.
-longPress($("sortday"),()=>{S.dmode=S.dmode==="d5"?"d1":"d5";save();apply()},()=>{S.sort={"":"desc",desc:"asc",asc:""}[S.sort];apply()});
+// Tapping a sortable header cycles desc -> asc -> off; only one column sorts at a time.
+const cycleSort=col=>{S.sort=S.sortCol===col?{"":"desc",desc:"asc",asc:""}[S.sort]:"desc";S.sortCol=S.sort?col:"";apply()};
+longPress($("sortday"),()=>{S.dmode=S.dmode==="d5"?"d1":"d5";save();apply()},()=>cycleSort("day"));
 // Value column: long-press opens the display menu (Raw / Z / % / Rank).
 const menuOpen=o=>{$("dispmenu").hidden=!o;$("colbtn").setAttribute("aria-expanded",o)};
-longPress($("colbtn"),()=>menuOpen($("dispmenu").hidden));
+longPress($("colbtn"),()=>menuOpen($("dispmenu").hidden),()=>cycleSort("val"));
 document.addEventListener("pointerdown",e=>{if(!$("colth").contains(e.target))menuOpen(false)});
 document.querySelectorAll("[data-disp]").forEach(x=>x.onclick=()=>{S.disp=x.dataset.disp;save();apply();menuOpen(false)});
 document.querySelectorAll("[data-r2]").forEach(x=>x.onclick=()=>{S.r2=x.dataset.r2==="1";save();apply()});
@@ -431,7 +436,7 @@ def render_html(prices, caps, as_of):
 <title>Return Ranker</title><style>{CSS}</style></head><body><main>
 <header><div><h1>Return Ranker</h1><p class=sum id=sum></p></div><button class=gear id=gear aria-label=Settings aria-expanded=false aria-controls=sheet>{GEAR}</button></header>
 <table id=tbl><thead><tr><th>Ticker</th><th id=colth class=num><button class=sortb id=colbtn aria-haspopup=menu aria-expanded=false aria-controls=dispmenu
- title="Long-press to change display"><span id=col>Ann. Log Return</span></button>
+ title="Tap to sort, long-press to change display" data-dir=""><span id=col>Ann. Log Return</span>{SORT}</button>
 <div class=menu id=dispmenu role=menu aria-label=Display hidden><button role=menuitemradio data-disp=raw>Raw</button><button role=menuitemradio data-disp=z>Z-score</button><button role=menuitemradio data-disp=pct>Percentile</button><button role=menuitemradio data-disp=rank>Rank</button></div></th>
 <th id=tday class=num hidden><button class=sortb id=sortday data-dir="" aria-label="Sort by today's change" title="Tap to sort, long-press for 5-day"><span id=daylbl>Today</span>{SORT}</button></th></tr></thead><tbody id=rows></tbody></table>
 <p class=asof>As of {as_of}</p></main>
