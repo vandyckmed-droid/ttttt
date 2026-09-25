@@ -238,16 +238,18 @@ CSS = f"""
 :root[data-theme=light]{{{LIGHT}}}
 """ + """*{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.4 -apple-system,BlinkMacSystemFont,"Inter","Segoe UI",system-ui,sans-serif}
-main{max-width:560px;margin:0 auto;padding:24px 16px 40px}
-header{position:relative;text-align:center;padding:52px 0 20px}
-h1{font-size:28px;font-weight:700;letter-spacing:-.01em;margin:0 0 6px}
-.gear{position:absolute;top:0;right:0;width:46px;height:46px;border:0;border-radius:14px;background:var(--chip);color:var(--fg);cursor:pointer;display:grid;place-items:center}
-.sum{margin:0;color:var(--muted);font-size:17px;letter-spacing:.02em}
+main{max-width:560px;margin:0 auto;padding:12px 16px 40px}
+.open main{padding-bottom:calc(var(--sheet-h,50vh) + 16px)}  /* keep the table scrollable above the sheet */
+header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:4px 0 12px}
+h1{font-size:22px;font-weight:700;letter-spacing:-.01em;margin:0}
+.gear{flex:none;width:40px;height:40px;border:0;border-radius:12px;background:var(--chip);color:var(--fg);cursor:pointer;display:grid;place-items:center}
+.gear[aria-expanded=true]{background:var(--sel);box-shadow:var(--shadow)}
+.sum{margin:2px 0 0;color:var(--muted);font-size:14px;letter-spacing:.02em}
 table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
 th{background:var(--chip);color:var(--muted);font-weight:400;font-size:15px;text-align:left;padding:10px 14px;white-space:nowrap}
 th:first-child{border-radius:10px 0 0 10px}th:last-child{border-radius:0 10px 10px 0}
 #col{border-radius:0 10px 10px 0}.today #col{border-radius:0}
-td{padding:12px 14px;border-bottom:1px solid var(--line)}
+td{padding:10px 14px;border-bottom:1px solid var(--line)}
 th:last-child,td:last-child,.num{text-align:right}
 .today th,.today td{padding-left:10px;padding-right:10px}
 .sortb{border:0;background:none;color:inherit;font:inherit;padding:0;cursor:pointer;display:inline-flex;align-items:center;gap:6px}
@@ -265,20 +267,20 @@ tr.qr td{padding:18px 0;border-bottom:0}  /* room above and below the divider */
 .ql::before,.ql::after{content:"";flex:1;height:2px;background:currentColor;opacity:.8}
 .ql:empty::after{display:none}
 .asof{color:var(--muted);font-size:12px;text-align:center;margin:16px 0 0}
-.scrim{position:fixed;inset:0;background:rgba(0,0,0,.3);opacity:0;pointer-events:none;transition:opacity .2s}
-.sheet{position:fixed;left:0;right:0;bottom:0;max-width:560px;margin:0 auto;background:var(--sheet);border-radius:24px 24px 0 0;
-  padding:10px 20px calc(28px + env(safe-area-inset-bottom));max-height:90vh;overflow:auto;transform:translateY(105%);transition:transform .25s ease;
-  box-shadow:0 -4px 24px rgba(0,0,0,.1)}
-.open .scrim{opacity:1;pointer-events:auto}.open .sheet{transform:none}
-.grip{width:40px;height:5px;border-radius:3px;background:var(--line);margin:0 auto 14px}
-.top{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
-.top h2{font-size:28px;margin:0}
-.x{width:40px;height:40px;border:0;border-radius:50%;background:var(--chip);color:var(--fg);font-size:20px;line-height:1;cursor:pointer}
-.lbl{color:var(--muted);margin:0 0 10px}
-.row{display:grid;grid-template-columns:1fr 55%;align-items:center;gap:12px;margin-top:18px}
-.row .lbl{margin:0}
-.seg{display:grid;grid-auto-columns:1fr;grid-auto-flow:column;background:var(--chip);border-radius:12px;padding:3px;gap:3px}
-.seg button{border:0;background:none;color:var(--muted);font:inherit;padding:9px 0;border-radius:10px;cursor:pointer}
+/* Compact, non-modal settings panel: no dimming, the table stays visible and
+   scrollable above it so rank moves can be watched while toggling. */
+.sheet{position:fixed;left:0;right:0;bottom:0;max-width:560px;margin:0 auto;background:var(--sheet);border-radius:18px 18px 0 0;
+  padding:8px 14px calc(12px + env(safe-area-inset-bottom));max-height:55vh;overflow:auto;transform:translateY(105%);transition:transform .25s ease;
+  box-shadow:0 -6px 24px rgba(0,0,0,.18);border-top:1px solid var(--line)}
+.open .sheet{transform:none}
+.top{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.top h2{font-size:17px;margin:0}
+.x{width:30px;height:30px;border:0;border-radius:50%;background:var(--chip);color:var(--fg);font-size:14px;line-height:1;cursor:pointer}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 10px}
+.grid .full{grid-column:1/-1}
+.lbl{color:var(--muted);font-size:12px;letter-spacing:.03em;margin:0 0 4px}
+.seg{display:grid;grid-auto-columns:1fr;grid-auto-flow:column;background:var(--chip);border-radius:10px;padding:2px;gap:2px}
+.seg button{border:0;background:none;color:var(--muted);font:inherit;font-size:14px;padding:6px 0;border-radius:8px;cursor:pointer}
 .seg button[aria-pressed=true]{background:var(--sel);color:var(--fg);font-weight:500;box-shadow:var(--shadow)}
 .seg button:focus-visible{outline:2px solid var(--pos);outline-offset:1px}
 """
@@ -376,8 +378,10 @@ document.querySelectorAll("[data-r2]").forEach(x=>x.onclick=()=>{S.r2=x.dataset.
 document.querySelectorAll("[data-vol]").forEach(x=>x.onclick=()=>{S.vol=x.dataset.vol==="1";save();apply()});
 document.querySelectorAll("[data-skip]").forEach(x=>x.onclick=()=>{S.skip=x.dataset.skip==="1";save();apply()});
 apply();
-const close=()=>b.classList.remove("open");
-$("gear").onclick=()=>b.classList.add("open");$("scrim").onclick=close;$("close").onclick=close;
+const setOpen=o=>{b.classList.toggle("open",o);$("gear").setAttribute("aria-expanded",o);
+  if(o)document.documentElement.style.setProperty("--sheet-h",$("sheet").offsetHeight+"px")};
+const close=()=>setOpen(false);
+$("gear").onclick=()=>setOpen(!b.classList.contains("open"));$("close").onclick=close;
 document.onkeydown=e=>{if(e.key==="Escape")close()};
 """
 
@@ -393,21 +397,22 @@ def render_html(prices, caps, as_of):
     return f"""<!doctype html><html lang=en><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>Return Ranker</title><style>{CSS}</style></head><body><main>
-<header><button class=gear id=gear aria-label=Settings>{GEAR}</button><h1>Return Ranker</h1><p class=sum id=sum></p></header>
+<header><div><h1>Return Ranker</h1><p class=sum id=sum></p></div><button class=gear id=gear aria-label=Settings aria-expanded=false aria-controls=sheet>{GEAR}</button></header>
 <table id=tbl><thead><tr><th>Ticker</th><th id=col class=num>Ann. Log Return</th>
 <th id=tday class=num hidden><button class=sortb id=sortday data-dir="" aria-label="Sort by today's change">Today{SORT}</button></th></tr></thead><tbody id=rows></tbody></table>
 <p class=asof>As of {as_of}</p></main>
-<div class=scrim id=scrim></div>
-<section class=sheet role=dialog aria-label=Settings><div class=grip></div>
-<div class=top><h2>Settings</h2><button class=x id=close aria-label=Close>&#x2715;</button></div>
-<p class=lbl>Universe</p><div class=seg role=group aria-label="Market cap">{cap_buttons}</div>
-<div class=row><p class=lbl>Blend</p><div class=seg role=group aria-label=Blend><button data-win=6m>6M</button><button data-win=12m>12M</button></div></div>
-<div class=row><p class=lbl>Volatility</p><div class=seg role=group aria-label=Volatility><button data-vol=0>Off</button><button data-vol=1>On</button></div></div>
-<div class=row><p class=lbl>&times; R&sup2;</p><div class=seg role=group aria-label="Multiply by R squared"><button data-r2=0>Off</button><button data-r2=1>On</button></div></div>
-<div class=row><p class=lbl>Skip</p><div class=seg role=group aria-label=Skip><button data-skip=0>None</button><button data-skip=1>{SKIP}</button></div></div>
-<p class=lbl style="margin-top:18px">Display</p><div class=seg role=group aria-label=Display><button data-disp=raw>Raw</button><button data-disp=z>Z</button><button data-disp=pct>%</button><button data-disp=rank>Rank</button></div>
-<div class=row><p class=lbl>Today</p><div class=seg role=group aria-label="Today's change"><button data-today=0>Off</button><button data-today=1>On</button></div></div>
-<div class=row><p class=lbl>Appearance</p><div class=seg role=group aria-label=Appearance><button data-theme-opt=auto>Auto</button><button data-theme-opt=light>Light</button><button data-theme-opt=dark>Dark</button></div></div>
+<section class=sheet id=sheet role=region aria-label=Settings>
+<div class=top><h2>Settings</h2><button class=x id=close aria-label="Close settings">&#x2715;</button></div>
+<div class=grid>
+<div class=full><p class=lbl>Universe</p><div class=seg role=group aria-label="Market cap">{cap_buttons}</div></div>
+<div><p class=lbl>Blend</p><div class=seg role=group aria-label=Blend><button data-win=6m>6M</button><button data-win=12m>12M</button></div></div>
+<div><p class=lbl>Skip</p><div class=seg role=group aria-label=Skip><button data-skip=0>None</button><button data-skip=1>{SKIP}</button></div></div>
+<div><p class=lbl>Volatility</p><div class=seg role=group aria-label=Volatility><button data-vol=0>Off</button><button data-vol=1>On</button></div></div>
+<div><p class=lbl>&times; R&sup2;</p><div class=seg role=group aria-label="Multiply by R squared"><button data-r2=0>Off</button><button data-r2=1>On</button></div></div>
+<div class=full><p class=lbl>Display</p><div class=seg role=group aria-label=Display><button data-disp=raw>Raw</button><button data-disp=z>Z</button><button data-disp=pct>%</button><button data-disp=rank>Rank</button></div></div>
+<div><p class=lbl>Today</p><div class=seg role=group aria-label="Today's change"><button data-today=0>Off</button><button data-today=1>On</button></div></div>
+<div><p class=lbl>Appearance</p><div class=seg role=group aria-label=Appearance><button data-theme-opt=auto>Auto</button><button data-theme-opt=light>Light</button><button data-theme-opt=dark>Dark</button></div></div>
+</div>
 </section>
 <script>{consts}{JS}</script></body></html>"""
 
