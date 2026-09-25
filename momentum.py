@@ -231,8 +231,8 @@ h1{font-size:28px;font-weight:700;letter-spacing:-.01em;margin:0 0 6px}
 table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
 th{background:var(--chip);color:var(--muted);font-weight:400;font-size:15px;text-align:left;padding:10px 14px;white-space:nowrap}
 th:first-child{border-radius:10px 0 0 10px}th:last-child{border-radius:0 10px 10px 0}
+#col{border-radius:0 10px 10px 0}.today #col{border-radius:0}
 td{padding:12px 14px;border-bottom:1px solid var(--line)}
-th:nth-child(1),td:nth-child(1){width:4.2em}
 th:last-child,td:last-child,.num{text-align:right}
 .today th,.today td{padding-left:10px;padding-right:10px}
 .sortb{border:0;background:none;color:inherit;font:inherit;padding:0;cursor:pointer;display:inline-flex;align-items:center;gap:6px}
@@ -278,11 +278,12 @@ function score(r,win,skip,vol){
   return ann/(sd*Math.sqrt(YEAR));
 }
 const S={caps:new Set(store.get("caps",BUCKETS.join(",")).split(",").filter(c=>BUCKETS.includes(c))),
-  wins:new Set(store.get("wins","12m").split(",").filter(w=>w in WIN)),vol:store.get("vol","0")==="1",skip:store.get("skip","0")==="1",z:store.get("z","0")==="1",today:store.get("today","0")==="1",sort:"",
+  wins:new Set(store.get("wins","12m").split(",").filter(w=>w in WIN)),vol:store.get("vol","0")==="1",skip:store.get("skip","0")==="1",disp:store.get("disp",store.get("z","0")==="1"?"z":"raw"),today:store.get("today","0")==="1",sort:"",
   theme:store.get("theme","auto")};
 if(!["auto","light","dark"].includes(S.theme))S.theme="auto";
+if(!["raw","z","pct","rank"].includes(S.disp))S.disp="raw";
 if(!S.wins.size)S.wins.add("12m");
-const save=()=>{store.set("theme",S.theme);store.set("caps",[...S.caps].join(","));store.set("wins",[...S.wins].join(","));store.set("vol",S.vol?"1":"0");store.set("skip",S.skip?"1":"0");store.set("z",S.z?"1":"0");store.set("today",S.today?"1":"0")};
+const save=()=>{store.set("theme",S.theme);store.set("caps",[...S.caps].join(","));store.set("wins",[...S.wins].join(","));store.set("vol",S.vol?"1":"0");store.set("skip",S.skip?"1":"0");store.set("disp",S.disp);store.set("today",S.today?"1":"0")};
 function apply(){
   const skip=S.skip?SKIP:0,vol=S.vol,wins=["6m","12m"].filter(w=>S.wins.has(w));
   if(S.theme==="auto")delete document.documentElement.dataset.theme;else document.documentElement.dataset.theme=S.theme;
@@ -292,19 +293,24 @@ function apply(){
   document.querySelectorAll("[data-vol]").forEach(x=>x.setAttribute("aria-pressed",String(x.dataset.vol==="1")===String(vol)));
   document.querySelectorAll("[data-skip]").forEach(x=>x.setAttribute("aria-pressed",String(x.dataset.skip==="1")===String(S.skip)));
   const pool=R.filter(([,c])=>S.caps.has(c));
-  document.querySelectorAll("[data-z]").forEach(x=>x.setAttribute("aria-pressed",String(x.dataset.z==="1")===String(S.z)));
-  $("sum").textContent=[pool.length,wins.map(w=>parseInt(w)).join("/"),...(vol?["VOL"]:[]),...(skip?["S"+SKIP]:[]),...(S.z?["Z"]:[])].join(" \\u2022 ");
+  // Display: Raw value, Z-score (a blend z-scores each window first, as rank()
+  // with zscore=True), percentile (100% = top) or rank position.
+  const Z=S.disp==="z";
+  document.querySelectorAll("[data-disp]").forEach(x=>x.setAttribute("aria-pressed",x.dataset.disp===S.disp));
+  $("sum").textContent=[pool.length,wins.map(w=>parseInt(w)).join("/"),...(vol?["VOL"]:[]),...(skip?["S"+SKIP]:[]),
+    ...({z:["Z"],pct:["%"],rank:["RANK"]}[S.disp]||[])].join(" \\u2022 ");
   document.querySelectorAll("[data-today]").forEach(x=>x.setAttribute("aria-pressed",String(x.dataset.today==="1")===String(S.today)));
   $("tbl").classList.toggle("today",S.today);$("tday").hidden=!S.today;if(!S.today)S.sort="";$("sortday").dataset.dir=S.sort;
-  $("col").innerHTML=S.today?(S.z?"Z-score":vol?"Ret / &sigma;":"Ann. Ret"):
-    (S.z?"Z-score":"")+(S.z?(vol?" (Ret / &sigma;)":" (Ann. Return)"):vol?"Ann. Return / &sigma;":"Ann. Log Return");
+  $("col").innerHTML={z:"Z-score",pct:"Percentile",rank:"Rank"}[S.disp]||(vol?"Ann. Return / &sigma;":"Ann. Log Return");
   // Mirrors rank(): per-window scores, optionally z-scored across the pool, then averaged.
   const rows=[],chg={};for(const [t,,r,d] of pool){const c=wins.map(w=>score(r,WIN[w],skip,vol));if(!c.includes(null)){rows.push([t,c]);chg[t]=d}}
   let cols=wins.map((_,j)=>rows.map(([,c])=>c[j]));
-  if(S.z)cols=cols.map(col=>{const k=col.length;if(k<2)return col.map(()=>0);
+  if(Z)cols=cols.map(col=>{const k=col.length;if(k<2)return col.map(()=>0);
     const m=col.reduce((a,v)=>a+v,0)/k,sd=Math.sqrt(col.reduce((a,v)=>a+(v-m)**2,0)/(k-1));return col.map(v=>sd?(v-m)/sd:0)});
   const ranked=rows.map(([t],i)=>[t,cols.reduce((a,col)=>a+col[i]/wins.length,0)]).sort((a,c)=>c[1]-a[1]);
-  const fmt=v=>(v>=0?"+":"\\u2212")+(vol||S.z?Math.abs(v).toFixed(2):(Math.abs(v)*100).toFixed(1)+"%");
+  const sgn=v=>(v>=0?"+":"\\u2212"),m=ranked.length;
+  const fmt=(v,i)=>S.disp==="rank"?String(i+1):S.disp==="pct"?Math.floor(m>1?100*(1-i/(m-1)):100)+"%":
+    sgn(v)+(vol||Z?Math.abs(v).toFixed(2):(Math.abs(v)*100).toFixed(1)+"%");
   // Percentile lines: the line labelled Pk sits below the stocks at or above the
   // k-th percentile (e.g. P95 = top 5% above the line).
   const n=ranked.length,q={};
@@ -318,10 +324,10 @@ function apply(){
   // them, and the percentile lines are shown only in rank order.
   const order=ranked.map((x,i)=>[...x,i]);
   if(S.sort)order.sort((a,c)=>S.sort==="desc"?chg[c[0]]-chg[a[0]]:chg[a[0]]-chg[c[0]]);
-  const line=S.sort?{}:q,ncol=S.today?4:3;
+  const line=S.sort?{}:q,ncol=S.today?3:2;
   const day=d=>`<td class="num ${d>0?"up-c":d<0?"dn-c":"fl-c"}">${d>=0?"+":"\\u2212"}${Math.abs(d*100).toFixed(2)}%</td>`;
-  $("rows").innerHTML=n?order.map(([t,v,i])=>`<tr${line[i]?" class=q":""}><td>${i+1}</td><td>${t}</td><td class=num style="color:${grad(i)}">${fmt(v)}</td>${S.today?day(chg[t]):""}</tr>`+
-    (line[i]?`<tr class=qr><td><div class=ql></div></td><td><div class=ql>${line[i]}</div></td>`+`<td><div class=ql></div></td>`.repeat(ncol-2)+`</tr>`:"")).join("")
+  $("rows").innerHTML=n?order.map(([t,v,i])=>`<tr${line[i]?" class=q":""}><td>${t}</td><td class=num style="color:${grad(i)}">${fmt(v,i)}</td>${S.today?day(chg[t]):""}</tr>`+
+    (line[i]?`<tr class=qr><td><div class=ql>${line[i]}</div></td>`+`<td><div class=ql></div></td>`.repeat(ncol-1)+`</tr>`:"")).join("")
     :`<tr><td colspan=${ncol} class=empty>${S.caps.size?"No stocks in the selected market caps.":"Select at least one market cap."}</td></tr>`;
 }
 document.querySelectorAll("[data-cap]").forEach(x=>x.onclick=()=>{const c=x.dataset.cap;S.caps.has(c)?S.caps.delete(c):S.caps.add(c);save();apply()});
@@ -330,7 +336,7 @@ document.querySelectorAll("[data-win]").forEach(x=>x.onclick=()=>{const w=x.data
 document.querySelectorAll("[data-theme-opt]").forEach(x=>x.onclick=()=>{S.theme=x.dataset.themeOpt;save();apply()});
 document.querySelectorAll("[data-today]").forEach(x=>x.onclick=()=>{S.today=x.dataset.today==="1";save();apply()});
 $("sortday").onclick=()=>{S.sort={"":"desc",desc:"asc",asc:""}[S.sort];apply()};
-document.querySelectorAll("[data-z]").forEach(x=>x.onclick=()=>{S.z=x.dataset.z==="1";save();apply()});
+document.querySelectorAll("[data-disp]").forEach(x=>x.onclick=()=>{S.disp=x.dataset.disp;save();apply()});
 document.querySelectorAll("[data-vol]").forEach(x=>x.onclick=()=>{S.vol=x.dataset.vol==="1";save();apply()});
 document.querySelectorAll("[data-skip]").forEach(x=>x.onclick=()=>{S.skip=x.dataset.skip==="1";save();apply()});
 apply();
@@ -352,7 +358,7 @@ def render_html(prices, caps, as_of):
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>Return Ranker</title><style>{CSS}</style></head><body><main>
 <header><button class=gear id=gear aria-label=Settings>{GEAR}</button><h1>Return Ranker</h1><p class=sum id=sum></p></header>
-<table id=tbl><thead><tr><th>#</th><th>Ticker</th><th id=col class=num>Ann. Log Return</th>
+<table id=tbl><thead><tr><th>Ticker</th><th id=col class=num>Ann. Log Return</th>
 <th id=tday class=num hidden><button class=sortb id=sortday data-dir="" aria-label="Sort by today's change">Today{SORT}</button></th></tr></thead><tbody id=rows></tbody></table>
 <p class=asof>As of {as_of}</p></main>
 <div class=scrim id=scrim></div>
@@ -362,7 +368,7 @@ def render_html(prices, caps, as_of):
 <div class=row><p class=lbl>Blend</p><div class=seg role=group aria-label=Blend><button data-win=6m>6M</button><button data-win=12m>12M</button></div></div>
 <div class=row><p class=lbl>Volatility</p><div class=seg role=group aria-label=Volatility><button data-vol=0>Off</button><button data-vol=1>On</button></div></div>
 <div class=row><p class=lbl>Skip</p><div class=seg role=group aria-label=Skip><button data-skip=0>None</button><button data-skip=1>{SKIP}</button></div></div>
-<div class=row><p class=lbl>Z-score</p><div class=seg role=group aria-label=Z-score><button data-z=0>Off</button><button data-z=1>On</button></div></div>
+<p class=lbl style="margin-top:18px">Display</p><div class=seg role=group aria-label=Display><button data-disp=raw>Raw</button><button data-disp=z>Z</button><button data-disp=pct>%</button><button data-disp=rank>Rank</button></div>
 <div class=row><p class=lbl>Today</p><div class=seg role=group aria-label="Today's change"><button data-today=0>Off</button><button data-today=1>On</button></div></div>
 <div class=row><p class=lbl>Appearance</p><div class=seg role=group aria-label=Appearance><button data-theme-opt=auto>Auto</button><button data-theme-opt=light>Light</button><button data-theme-opt=dark>Dark</button></div></div>
 </section>
