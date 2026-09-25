@@ -183,19 +183,39 @@ def r_squared(r):
 
 
 def score(rets, window=LOOKBACK, skip=0, vol_adjust=False, r2=False):
-    """Annualized sum of daily log returns over the last `window` sessions,
-    excluding the most recent `skip`: sum * 252 / n, n = window - skip (factor 1
-    for the plain 12-month window). With vol_adjust, divided by the annualized
-    sample std dev of those same daily returns, stdev * sqrt(252). With r2, the
-    result is multiplied by the R² of the log-price trend over the same window.
-    The page's JavaScript mirrors this exactly."""
+    """Score over the last `window` sessions excluding the most recent `skip`
+    (N = window - skip daily log returns r_t):
+      raw:      annualized sum, sum(r) * 252 / N (factor 1 for the plain 12M window)
+      vol_adj:  VolAdj(W) = sum(r) / (SD(r) * sqrt(N)), numerator and denominator
+                on the same N observations (a same-window Sharpe-like ratio; no
+                annualization) -- see vol_adj()
+    With r2, the result is multiplied by the R² of the log-price trend over the
+    same window. The page's JavaScript mirrors this exactly."""
     if len(rets) < window:
         return None
     r = rets[len(rets) - window:len(rets) - skip]
-    out = sum(r) * TRADING_DAYS / len(r)
-    if vol_adjust:
-        out /= statistics.stdev(r) * math.sqrt(TRADING_DAYS)
+    out = vol_adj(r) if vol_adjust else sum(r) * TRADING_DAYS / len(r)
     return out * r_squared(r) if r2 else out
+
+
+def vol_adj(r):
+    """VolAdj(W) = sum(r) / (SD(r) * sqrt(N)) over the exact window r."""
+    if len(r) < 2:
+        return None
+    sd = statistics.stdev(r)
+    return sum(r) / (sd * math.sqrt(len(r))) if sd else 0.0
+
+
+WINSOR = 0.01  # clip each window's scores to the 1st/99th percentile across stocks before z-scoring
+
+
+def winsorize(values, p=WINSOR):
+    """Clip to the p and 1-p sample quantiles (nearest-rank on the sorted values)."""
+    if len(values) < 3:
+        return list(values)
+    srt = sorted(values)
+    lo, hi = srt[int(p * (len(srt) - 1))], srt[int((1 - p) * (len(srt) - 1))]
+    return [min(max(v, lo), hi) for v in values]
 
 
 def load_returns(top=None):
@@ -244,8 +264,9 @@ def zscores(values):
 def rank(returns, window="12m", w6=0.5, skip=0, vol_adjust=False, include=None, zscore=False, r2=False):
     """Rank the stocks in `include` (all when None), best first. A blend is the
     weighted sum of the 6M and 12M scores; with zscore, each window's scores are
-    first converted to z-scores across the ranked stocks (so the blend weighs the
-    windows equally in dispersion) and the result is shown in z units."""
+    winsorized (WINSOR) and converted to z-scores across the ranked stocks (so the
+    blend weighs the windows equally in dispersion) and the result is in z units.
+    Pipeline per window: raw return -> VolAdj -> winsorize -> z-score -> combine."""
     parts = [("6m", w6), ("12m", 1 - w6)] if window == "blend" else [(window, 1.0)]
     rows = []
     for s, r in returns.items():
@@ -256,7 +277,7 @@ def rank(returns, window="12m", w6=0.5, skip=0, vol_adjust=False, include=None, 
             rows.append((s, comps))
     cols = [[c[j] for _, c in rows] for j in range(len(parts))]
     if zscore:
-        cols = [zscores(col) for col in cols]
+        cols = [zscores(winsorize(col)) for col in cols]
     scored = [(s, sum(wt * cols[j][i] for j, (_, wt) in enumerate(parts))) for i, (s, _) in enumerate(rows)]
     return sorted(scored, key=lambda x: x[1], reverse=True)
 
@@ -433,13 +454,15 @@ function r2of(x){  // mirrors r_squared()
   let sxy=0,sxx=0,syy=0;y.forEach((v,k)=>{sxy+=(k-mk)*(v-my)});for(let k=0;k<n;k++)sxx+=(k-mk)**2;for(const v of y)syy+=(v-my)**2;
   return syy?sxy*sxy/(sxx*syy):0;
 }
+// VolAdj(W) = sum(r) / (SD(r) * sqrt(N)) on the exact window (mirrors vol_adj()).
+function volAdj(x){const n=x.length;if(n<2)return null;const sum=x.reduce((a,v)=>a+v,0),m=sum/n,sd=Math.sqrt(x.reduce((a,v)=>a+(v-m)**2,0)/(n-1));return sd?sum/(sd*Math.sqrt(n)):0}
 function score(r,win,skip,vol,r2){
   if(r.length<win)return null;
   const x=r.slice(r.length-win,r.length-skip),n=x.length,sum=x.reduce((a,v)=>a+v,0);
-  let out=sum*YEAR/n;
-  if(vol){const m=sum/n,sd=Math.sqrt(x.reduce((a,v)=>a+(v-m)**2,0)/(n-1));out/=sd*Math.sqrt(YEAR)}
+  const out=vol?volAdj(x):sum*YEAR/n;
   return r2?out*r2of(x):out;
 }
+function winsorize(col){if(col.length<3)return col;const s=[...col].sort((a,c)=>a-c),lo=s[Math.floor(WINSOR*(s.length-1))],hi=s[Math.floor((1-WINSOR)*(s.length-1))];return col.map(v=>Math.min(Math.max(v,lo),hi))}
 const S={caps:new Set(store.get("caps",BUCKETS.join(",")).split(",").filter(c=>BUCKETS.includes(c))),
   wins:new Set(store.get("wins","12m").split(",").filter(w=>w in WIN)),vol:store.get("vol","0")==="1",r2:store.get("r2","0")==="1",skip:store.get("skip","0")==="1",disp:store.get("disp",store.get("z","0")==="1"?"z":"raw"),today:store.get("today","0")==="1",dmode:store.get("dmode","d1")==="d5"?"d5":"d1",sort:"",sortCol:"",
   theme:store.get("theme","auto")};
@@ -452,6 +475,7 @@ const save=()=>{store.set("theme",S.theme);store.set("caps",[...S.caps].join(","
 let prevRank=null,lastRank={},labNames=[];
 const CW={"1M":21,"3M":63,"6M":126,"1Y":252};let cw=store.get("cw","3M");if(!(cw in CW))cw="3M";let lastCorr=null;
 let lw=store.get("lw","1M");if(!(lw in CW))lw="1M";  // cumulative heatmap window; 1M is daily, longer windows weekly
+let lv=store.get("lv","1")!=="0";  // heatmap cells: VolAdj of the running window (default) or raw cumulative return
 const fmtDate=d=>{const [y,m,dd]=d.split("-");return new Date(+y,m-1,+dd).toLocaleDateString(undefined,{month:"short",day:"numeric"})};
 function apply(){
   const skip=S.skip?SKIP:0,vol=S.vol,wins=["6m","12m"].filter(w=>S.wins.has(w));
@@ -475,11 +499,11 @@ function apply(){
   $("daylbl").textContent=S.dmode==="d5"?"5D":"Today";
   $("sortday").setAttribute("aria-label",(S.dmode==="d5"?"Sort by 5-day log return":"Sort by today's change")+"; long-press to switch");
   $("col").innerHTML={z:"Z-score",pct:"Percentile",rank:"Rank"}[S.disp]||
-    (S.r2?(vol?"Ret / &sigma; &times; R&sup2;":"Ann. Ret &times; R&sup2;"):vol?"Ann. Return / &sigma;":"Ann. Log Return");
+    (S.r2?(vol?"Vol-adj &times; R&sup2;":"Ann. Ret &times; R&sup2;"):vol?"Vol-adj return":"Ann. Log Return");
   // Mirrors rank(): per-window scores, optionally z-scored across the pool, then averaged.
   const rows=[],chg={};for(const [t,,r,d] of pool){const c=wins.map(w=>score(r,WIN[w],skip,vol,S.r2));if(!c.includes(null)){rows.push([t,c]);chg[t]=d[S.dmode]}}
   let cols=wins.map((_,j)=>rows.map(([,c])=>c[j]));
-  if(Z)cols=cols.map(col=>{const k=col.length;if(k<2)return col.map(()=>0);
+  if(Z)cols=cols.map(winsorize).map(col=>{const k=col.length;if(k<2)return col.map(()=>0);
     const m=col.reduce((a,v)=>a+v,0)/k,sd=Math.sqrt(col.reduce((a,v)=>a+(v-m)**2,0)/(k-1));return col.map(v=>sd?(v-m)/sd:0)});
   const ranked=rows.map(([t],i)=>[t,cols.reduce((a,col)=>a+col[i]/wins.length,0)]).sort((a,c)=>c[1]-a[1]);
   const sgn=v=>(v>=0?"+":"\\u2212"),m=ranked.length;
@@ -545,21 +569,24 @@ apply();
 // ---- Lab: cumulative 21-day log return, day by day, for every name above P95.
 function renderLab(){const el=$("hm");if(!el)return;const W=CW[lw],step=W>21?5:1,nc=Math.round(W/step);
   document.querySelectorAll("[data-lw]").forEach(x=>x.setAttribute("aria-pressed",x.dataset.lw===lw));
-  $("labttl").textContent=`${lw} cumulative log return`;
+  document.querySelectorAll("[data-lv]").forEach(x=>x.setAttribute("aria-pressed",(x.dataset.lv==="1")===lv));
+  $("labttl").textContent=`${lw} cumulative ${lv?"vol-adjusted":"log"} return`;
   const names=labNames.filter(t=>PX[t]&&PX[t].length>W);
-  $("labsub").textContent=names.length?`${names.length} names above P95 · log return since the close ${W} sessions ago, ${step===1?"daily":"at each week's end"} · ${$("sum").textContent}`:"No names above P95 with enough history.";
+  $("labsub").textContent=names.length?`${names.length} names above P95 · ${lv?"Σr / (σ√N) of the daily log returns":"log return"} since the close ${W} sessions ago, ${step===1?"daily":"at each week's end"} · ${$("sum").textContent}`:"No names above P95 with enough history.";
   if(!names.length){el.innerHTML="";renderCorr([]);return}
-  // column k = cumulative return at the session step*(nc-1-k) sessions before the latest (last column = latest price)
-  const rows=names.map(t=>{const p=PX[t],L=p.length,base=p[L-1-W];return[t,Array.from({length:nc},(_,k)=>Math.log(p[L-1-(nc-1-k)*step]/base))]});
+  // column k ends step*(nc-1-k) sessions before the latest (last column = latest price); a cell is the
+  // running cumulative log return from the window start to that session, or VolAdj of those same daily returns
+  const rows=names.map(t=>{const p=PX[t],L=p.length,base=p[L-1-W],r=p.slice(L-1-W).map((v,i,a)=>i?Math.log(v/a[i-1]):0).slice(1);
+    return[t,Array.from({length:nc},(_,k)=>{const end=W-(nc-1-k)*step;return lv?(volAdj(r.slice(0,end))??0):Math.log(p[L-1-(nc-1-k)*step]/base)})]});
   const all=rows.flatMap(r=>r[1].map(Math.abs)).sort((a,c)=>a-c),vmax=all[Math.floor(all.length*.95)]||1e-9;
   const ds=Array.from({length:nc},(_,k)=>DATES[DATES.length-1-(nc-1-k)*step]);
   const col=v=>`color-mix(in oklab,var(${v>=0?"--pos":"--neg"}) ${Math.round(Math.min(1,Math.abs(v)/vmax)*100)}%,var(--chip))`;
-  const p=v=>(v>=0?"+":"−")+Math.abs(v*100).toFixed(1)+"%";
+  const p=v=>lv?(v>=0?"+":"−")+Math.abs(v).toFixed(2):(v>=0?"+":"−")+Math.abs(v*100).toFixed(1)+"%";
   el.style.setProperty("--cols",nc);el.classList.toggle("dense",nc>30);
   const every=nc>30?Math.ceil(nc/8):5;
   el.innerHTML=`<div></div>`+ds.map((d,i)=>`<div class=cl>${i%every===0||i===nc-1?fmtDate(d).replace(/^\w+ /,""):""}</div>`).join("")+`<div class=cl>${lw}</div>`+
     rows.map(([t,cs])=>`<div class=rl data-t="${t}">${t}</div>`+cs.map((v,i)=>`<div class=c data-t="${t}" data-i="${i}" style="background:${col(v)}" title="${t} ${fmtDate(ds[i])} ${p(v)}"></div>`).join("")+`<div class=rv style="color:${cs[cs.length-1]>=0?"var(--pos)":"var(--neg)"}">${p(cs[cs.length-1])}</div>`).join("");
-  $("lgmin").textContent="−"+(vmax*100).toFixed(0)+"%";$("lgmax").textContent="+"+(vmax*100).toFixed(0)+"%";
+  $("lgmin").textContent=lv?"−"+vmax.toFixed(2):"−"+(vmax*100).toFixed(0)+"%";$("lgmax").textContent=lv?"+"+vmax.toFixed(2):"+"+(vmax*100).toFixed(0)+"%";
   el.onclick=e=>{const c=e.target.closest(".c"),r=e.target.closest(".rl");if(r){showDetail(r.dataset.t);return}
     el.querySelectorAll(".c.on").forEach(x=>x.classList.remove("on"));const old=el.querySelector(".hmtip");if(old)old.remove();
     if(!c)return;c.classList.add("on");const t=c.dataset.t,i=+c.dataset.i,v=rows.find(r=>r[0]===t)[1][i];
@@ -618,6 +645,7 @@ function renderCorr(names){const el=$("cm");if(!el)return;const W=CW[cw];
     tip.style.left=(c.offsetLeft+c.offsetWidth/2)+"px";tip.style.top=c.offsetTop+"px";el.appendChild(tip)};
   lastCorr={use,C,ord}}
 document.querySelectorAll("[data-lw]").forEach(x=>x.onclick=()=>{lw=x.dataset.lw;store.set("lw",lw);renderLab()});
+document.querySelectorAll("[data-lv]").forEach(x=>x.onclick=()=>{lv=x.dataset.lv==="1";store.set("lv",lv?"1":"0");renderLab()});
 document.querySelectorAll("[data-cw]").forEach(x=>x.onclick=()=>{cw=x.dataset.cw;store.set("cw",cw);renderCorr(labNames.filter(t=>PX[t]))});
 // ---- Tabs
 const setTab=t=>{b.dataset.tab=t;store.set("tab",t);document.querySelectorAll("[data-tab]").forEach(x=>x.setAttribute("aria-selected",x.dataset.tab===t));if(t==="lab")renderLab()};
@@ -748,7 +776,7 @@ def render_html(prices, caps, as_of, meta=None, dates=None, intra=None):
     payload = json.dumps(build_payload(prices, caps, as_of, meta, dates, intra), separators=(",", ":"))
     buckets = [name for name, _ in CAP_BUCKETS]
     consts = (f"let PAYLOAD={payload};const SKIP={SKIP},YEAR={TRADING_DAYS},WIN={json.dumps(WINDOWS)},"
-              f"BUCKETS={json.dumps(buckets)},PCTS=[95,75,50,25,5],BARS={BARS_PER_DAY};")
+              f"BUCKETS={json.dumps(buckets)},PCTS=[95,75,50,25,5],BARS={BARS_PER_DAY},WINSOR={WINSOR};")
     cap_buttons = "".join(f"<button data-cap={n}>{n.title()}</button>" for n in buckets)
     hz_buttons = "".join(f"<button data-hz={h}>{h}</button>" for h in ("1D", "1W", "1M", "3M", "6M", "1Y"))
     return f"""<!doctype html><html lang=en><head><meta charset=utf-8>
@@ -763,10 +791,11 @@ def render_html(prices, caps, as_of, meta=None, dates=None, intra=None):
 <th id=tday class=num hidden><button class=sortb id=sortday data-dir="" aria-label="Sort by today's change" title="Tap to sort, long-press for 5-day"><span id=daylbl>Today</span>{SORT}</button></th></tr></thead><tbody id=rows></tbody></table>
 </div>
 <section id=lab aria-label=Lab><div class=labh><h2 id=labttl>1M cumulative log return</h2><p id=labsub></p></div>
-<div class=seg role=group aria-label="Cumulative window" style="margin-bottom:10px"><button data-lw=1M>1M</button><button data-lw=3M>3M</button><button data-lw=6M>6M</button><button data-lw=1Y>1Y</button></div>
+<div style="display:grid;grid-template-columns:1fr auto;gap:8px;margin-bottom:10px"><div class=seg role=group aria-label="Cumulative window"><button data-lw=1M>1M</button><button data-lw=3M>3M</button><button data-lw=6M>6M</button><button data-lw=1Y>1Y</button></div>
+<div class=seg role=group aria-label="Cell value"><button data-lv=0>Raw</button><button data-lv=1>Vol-adj</button></div></div>
 <div class=hm id=hm></div>
 <div class=lg><span id=lgmin></span><span class=bar></span><span id=lgmax></span></div>
-<p class=dnote>Each cell is the log return from the close at the start of the window to that column's close (the latest price for today); 1M shows every session, longer windows the end of each 5-session week. The right column is the full-window figure. Colour saturates at the 95th percentile of the grid. Tap a cell for the value, a ticker for its chart.</p>
+<p class=dnote>Each cell covers the window from its start to that column's close (the latest price for today): Raw is the cumulative log return; Vol-adj is Σr / (σ√N) of those same daily returns (the first daily cell has N=1 and shows 0). 1M shows every session, longer windows the end of each 5-session week. The right column is the full-window figure. Colour saturates at the 95th percentile of the grid. Tap a cell for the value, a ticker for its chart.</p>
 <div class="labh labsec"><h2>Correlation clusters</h2><p id=cmsub></p></div>
 <div class=seg role=group aria-label="Correlation window" style="margin-bottom:10px"><button data-cw=1M>1M</button><button data-cw=3M>3M</button><button data-cw=6M>6M</button><button data-cw=1Y>1Y</button></div>
 <div class=cm id=cm></div>
