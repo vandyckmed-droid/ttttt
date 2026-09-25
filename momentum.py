@@ -306,6 +306,17 @@ body[data-tab=lab] #ranktab,body:not([data-tab=lab]) #lab{display:none}
 .hm .c.on{outline:2px solid var(--fg);outline-offset:-1px}
 .lg{display:flex;align-items:center;gap:8px;margin:12px 0 0;font-size:12px;color:var(--muted)}
 .lg .bar{flex:1;height:10px;border-radius:5px;background:linear-gradient(90deg,var(--neg),var(--chip),var(--pos))}
+/* Correlation matrix + dendrogram */
+.cm{display:grid;grid-template-columns:44px 3.4em repeat(var(--n,1),1fr);gap:1px;font-size:12px;position:relative;align-items:stretch}
+.cm .cl{writing-mode:vertical-rl;transform:rotate(180deg);font-size:9px;color:var(--muted);text-align:left;line-height:1;padding:2px 0;height:34px;overflow:hidden}
+.cm .c{height:16px;border-radius:2px;background:var(--chip);min-width:0}
+.cm .c.self{background:var(--line)}
+.cm .c.on{outline:2px solid var(--fg);outline-offset:-1px}
+.cm .rl{height:16px;line-height:16px;font-weight:500;cursor:pointer;overflow:hidden;padding-right:3px}
+.cm .dg{grid-column:1;position:relative}
+.cm .dg svg{position:absolute;inset:0;width:100%;height:100%}
+.cm .dg path{fill:none;stroke:var(--muted);stroke-width:1.2}
+.labsec{margin-top:26px}
 .hmtip{position:absolute;z-index:3;background:var(--sheet);border:1px solid var(--line);border-radius:8px;padding:4px 8px;font-size:12px;
   white-space:nowrap;pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,.12);transform:translate(-50%,-110%)}
 header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:4px 0 12px}
@@ -439,6 +450,7 @@ const save=()=>{store.set("theme",S.theme);store.set("caps",[...S.caps].join(","
 // temporary ▲n / ▼n next to the ticker (CSS fades them out).
 let prevRank=null,lastRank={},labNames=[];
 const LABN=21;  // Lab heatmap window (sessions)
+const CW={"1M":21,"3M":63,"6M":126,"1Y":252};let cw=store.get("cw","3M");if(!(cw in CW))cw="3M";let lastCorr=null;
 const fmtDate=d=>{const [y,m,dd]=d.split("-");return new Date(+y,m-1,+dd).toLocaleDateString(undefined,{month:"short",day:"numeric"})};
 function apply(){
   const skip=S.skip?SKIP:0,vol=S.vol,wins=["6m","12m"].filter(w=>S.wins.has(w));
@@ -533,7 +545,7 @@ apply();
 function renderLab(){const el=$("hm");if(!el)return;
   const names=labNames.filter(t=>PX[t]&&PX[t].length>LABN);
   $("labsub").textContent=names.length?`${names.length} names above P95 · running sum of daily log returns over the last ${LABN} sessions · ${$("sum").textContent}`:"No names above P95 in the current universe.";
-  if(!names.length){el.innerHTML="";return}
+  if(!names.length){el.innerHTML="";renderCorr([]);return}
   const rows=names.map(t=>{const p=PX[t],L=p.length,base=p[L-1-LABN];let c=0;return[t,p.slice(L-LABN).map(v=>Math.log(v/base))]});
   const all=rows.flatMap(r=>r[1].map(Math.abs)).sort((a,c)=>a-c),vmax=all[Math.floor(all.length*.95)]||1e-9;
   const ds=DATES.slice(DATES.length-LABN);
@@ -547,7 +559,60 @@ function renderLab(){const el=$("hm");if(!el)return;
     el.querySelectorAll(".c.on").forEach(x=>x.classList.remove("on"));const old=el.querySelector(".hmtip");if(old)old.remove();
     if(!c)return;c.classList.add("on");const t=c.dataset.t,i=+c.dataset.i,v=rows.find(r=>r[0]===t)[1][i];
     const tip=document.createElement("div");tip.className="hmtip";tip.innerHTML=`${t} · ${fmtDate(ds[i])} · <b>${p(v)}</b>`;
-    tip.style.left=(c.offsetLeft+c.offsetWidth/2)+"px";tip.style.top=c.offsetTop+"px";el.appendChild(tip)}}
+    tip.style.left=(c.offsetLeft+c.offsetWidth/2)+"px";tip.style.top=c.offsetTop+"px";el.appendChild(tip)};
+  renderCorr(names)}
+// ---- Correlation clusters of the P95 names: Pearson correlation of daily
+// log returns over a window, distance = 1 - rho, average-linkage (UPGMA)
+// hierarchical clustering, rows arranged by optimal leaf ordering
+// (Bar-Joseph et al. 2001: adjacent-leaf distance sum minimised over all
+// 2^(n-1) flips of the dendrogram).
+function pearson(a,c){const n=a.length;let ma=0,mc=0;for(let i=0;i<n;i++){ma+=a[i];mc+=c[i]}ma/=n;mc/=n;
+  let sxy=0,sxx=0,syy=0;for(let i=0;i<n;i++){const x=a[i]-ma,y=c[i]-mc;sxy+=x*y;sxx+=x*x;syy+=y*y}return sxx&&syy?sxy/Math.sqrt(sxx*syy):0}
+function upgma(D){const n=D.length;let nodes=D.map((_,i)=>({leaf:i,size:1,dist:0}));let d=D.map(r=>r.slice());
+  while(nodes.length>1){let bi=0,bj=1,best=Infinity;
+    for(let i=0;i<nodes.length;i++)for(let j=i+1;j<nodes.length;j++)if(d[i][j]<best){best=d[i][j];bi=i;bj=j}
+    const A=nodes[bi],B=nodes[bj],m={l:A,r:B,size:A.size+B.size,dist:best};
+    const nd=[];for(let k=0;k<nodes.length;k++)if(k!==bi&&k!==bj)nd.push((A.size*d[k][bi]+B.size*d[k][bj])/m.size);
+    nodes=nodes.filter((_,k)=>k!==bi&&k!==bj);d=d.filter((_,k)=>k!==bi&&k!==bj).map(r=>r.filter((_,k)=>k!==bi&&k!==bj));
+    nodes.push(m);d.forEach((r,k)=>r.push(nd[k]));d.push(nd.concat([0]))}
+  return nodes[0]}
+function olo(node,D){  // -> {leaves, M: "u,w" -> {c, ord}} best orderings by (leftmost, rightmost) leaf
+  if(node.leaf!==undefined)return{leaves:[node.leaf],M:{[node.leaf+","+node.leaf]:{c:0,ord:[node.leaf]}}};
+  const A=olo(node.l,D),B=olo(node.r,D),M={};
+  for(const [X,Y] of [[A,B],[B,A]])for(const u of X.leaves)for(const w of Y.leaves){let best=null;
+    for(const m of X.leaves){const a=X.M[u+","+m];if(!a)continue;for(const k of Y.leaves){const bb=Y.M[k+","+w];if(!bb)continue;
+      const c=a.c+D[m][k]+bb.c;if(!best||c<best.c)best={c,ord:a.ord.concat(bb.ord)}}}
+    M[u+","+w]=best}
+  return{leaves:A.leaves.concat(B.leaves),M}}
+function bestOrder(root,D){const r=olo(root,D);let best=null;for(const k in r.M)if(!best||r.M[k].c<best.c)best=r.M[k];return best.ord}
+function renderCorr(names){const el=$("cm");if(!el)return;const W=CW[cw];
+  document.querySelectorAll("[data-cw]").forEach(x=>x.setAttribute("aria-pressed",x.dataset.cw===cw));
+  const use=names.filter(t=>PX[t].length>W);
+  $("cmsub").textContent=use.length>=3?`${use.length} names above P95 · Pearson ρ of daily log returns, last ${W} sessions · distance 1−ρ · average linkage · optimal leaf order`:"Need at least 3 names with enough history.";
+  if(use.length<3){el.innerHTML="";return}
+  const rets=use.map(t=>{const p=PX[t],L=p.length;return p.slice(L-W-1).map((v,i,a)=>i?Math.log(v/a[i-1]):null).slice(1)});
+  const n=use.length,C=use.map((_,i)=>use.map((_,j)=>i===j?1:pearson(rets[i],rets[j]))),D=C.map(r=>r.map(v=>1-v));
+  const root=upgma(D),ord=bestOrder(root,D);
+  const off=[];for(let i=0;i<n;i++)for(let j=0;j<n;j++)if(i!==j)off.push(Math.abs(C[i][j]));off.sort((a,c)=>a-c);const vmax=off[Math.floor(off.length*.95)]||1;
+  const col=v=>`color-mix(in oklab,var(${v>=0?"--pos":"--neg"}) ${Math.round(Math.min(1,Math.abs(v)/vmax)*100)}%,var(--chip))`;
+  // dendrogram: leaves at the right edge, merge height ∝ distance
+  const rowH=17,pos={};ord.forEach((li,k)=>pos[li]=k*rowH+rowH/2);const maxd=root.dist||1,DW=44;
+  const xOf=nd=>DW-2-(nd.dist/maxd)*(DW-6);let paths="";
+  const walk=nd=>{if(nd.leaf!==undefined)return{y:pos[nd.leaf],x:DW};const a=walk(nd.l),b=walk(nd.r),x=xOf(nd),y=(a.y+b.y)/2;
+    paths+=`M${a.x} ${a.y}H${x}V${b.y}H${b.x}`;return{y,x}};
+  const top=walk(root);paths+=`M${top.x} ${top.y}H2`;
+  el.style.setProperty("--n",n);
+  el.innerHTML=`<div></div><div></div>`+ord.map(j=>`<div class=cl>${use[j]}</div>`).join("")+
+    `<div class=dg style="grid-row:2 / span ${n}"><svg viewBox="0 0 ${DW} ${n*rowH}" preserveAspectRatio="none"><path d="${paths}"/></svg></div>`+
+    ord.map(i=>`<div class=rl data-t="${use[i]}">${use[i]}</div>`+ord.map(j=>`<div class="c${i===j?" self":""}" data-i="${i}" data-j="${j}" style="${i===j?"":"background:"+col(C[i][j])}"></div>`).join("")).join("");
+  $("cmmin").textContent="−"+vmax.toFixed(2);$("cmmax").textContent="+"+vmax.toFixed(2);
+  el.onclick=e=>{const c=e.target.closest(".c"),r=e.target.closest(".rl");if(r){showDetail(r.dataset.t);return}
+    el.querySelectorAll(".c.on").forEach(x=>x.classList.remove("on"));const old=el.querySelector(".hmtip");if(old)old.remove();
+    if(!c)return;c.classList.add("on");const i=+c.dataset.i,j=+c.dataset.j;
+    const tip=document.createElement("div");tip.className="hmtip";tip.innerHTML=`${use[i]} × ${use[j]} · ρ <b>${C[i][j].toFixed(2)}</b>`;
+    tip.style.left=(c.offsetLeft+c.offsetWidth/2)+"px";tip.style.top=c.offsetTop+"px";el.appendChild(tip)};
+  lastCorr={use,C,ord}}
+document.querySelectorAll("[data-cw]").forEach(x=>x.onclick=()=>{cw=x.dataset.cw;store.set("cw",cw);renderCorr(labNames.filter(t=>PX[t]))});
 // ---- Tabs
 const setTab=t=>{b.dataset.tab=t;store.set("tab",t);document.querySelectorAll("[data-tab]").forEach(x=>x.setAttribute("aria-selected",x.dataset.tab===t));if(t==="lab")renderLab()};
 document.querySelectorAll("[data-tab]").forEach(x=>x.onclick=()=>setTab(x.dataset.tab));
@@ -694,7 +759,12 @@ def render_html(prices, caps, as_of, meta=None, dates=None, intra=None):
 <section id=lab aria-label=Lab><div class=labh><h2>21D cumulative log return</h2><p id=labsub></p></div>
 <div class=hm id=hm></div>
 <div class=lg><span id=lgmin></span><span class=bar></span><span id=lgmax></span></div>
-<p class=dnote>Each cell is the log return from the close 21 sessions ago to that day's close (the latest price for today); the right column is the full 21-day figure. Colour saturates at the 95th percentile of the grid. Tap a cell for the value, a ticker for its chart.</p></section>
+<p class=dnote>Each cell is the log return from the close 21 sessions ago to that day's close (the latest price for today); the right column is the full 21-day figure. Colour saturates at the 95th percentile of the grid. Tap a cell for the value, a ticker for its chart.</p>
+<div class="labh labsec"><h2>Correlation clusters</h2><p id=cmsub></p></div>
+<div class=seg role=group aria-label="Correlation window" style="margin-bottom:10px"><button data-cw=1M>1M</button><button data-cw=3M>3M</button><button data-cw=6M>6M</button><button data-cw=1Y>1Y</button></div>
+<div class=cm id=cm></div>
+<div class=lg><span id=cmmin></span><span class=bar></span><span id=cmmax></span></div>
+<p class=dnote>Rows and columns follow the dendrogram's optimal leaf order, so neighbours are the most correlated pairs; the tree on the left shows the average-linkage merges (further left = merged at a larger 1−ρ). Colour saturates at the 95th percentile of |ρ| off the diagonal. Tap a cell for ρ, a ticker for its chart.</p></section>
 </main>
 <nav class=tabs aria-label=Views><button data-tab=rank aria-selected=true><span class=ico>&#9776;</span>Rank</button><button data-tab=lab aria-selected=false><span class=ico>&#9879;</span>Lab</button></nav>
 <section class=detail id=detail role=dialog aria-modal=true aria-labelledby=dtick>
