@@ -298,11 +298,12 @@ main{max-width:560px;margin:0 auto;padding:12px 16px calc(var(--tabh) + 16px)}
 body[data-tab=lab] #ranktab,body:not([data-tab=lab]) #lab{display:none}
 /* Lab: 21-day cumulative log-return heatmap */
 .labh{margin:6px 0 10px}.labh h2{font-size:17px;margin:0}.labh p{margin:2px 0 0;color:var(--muted);font-size:13px}
-.hm{display:grid;grid-template-columns:3.4em repeat(var(--cols,21),1fr) 4.1em;gap:2px;font-size:12px;font-variant-numeric:tabular-nums;position:relative}
+.hm{display:grid;grid-template-columns:3.4em repeat(var(--cols,21),1fr) 4.6em;gap:2px;font-size:12px;font-variant-numeric:tabular-nums;position:relative}
 .hm .rl{color:var(--fg);font-weight:500;display:flex;align-items:center;cursor:pointer;padding-right:4px;overflow:hidden}
 .hm .rv{color:var(--muted);display:flex;align-items:center;justify-content:flex-end;padding-left:4px}
 .hm .cl{color:var(--muted);font-size:10px;text-align:center;overflow:visible;white-space:nowrap}
 .hm .c{height:18px;border-radius:3px;background:var(--chip)}
+.hm.dense{gap:1px}.hm.dense .c{border-radius:1px}
 .hm .c.on{outline:2px solid var(--fg);outline-offset:-1px}
 .lg{display:flex;align-items:center;gap:8px;margin:12px 0 0;font-size:12px;color:var(--muted)}
 .lg .bar{flex:1;height:10px;border-radius:5px;background:linear-gradient(90deg,var(--neg),var(--chip),var(--pos))}
@@ -449,8 +450,8 @@ const save=()=>{store.set("theme",S.theme);store.set("caps",[...S.caps].join(","
 // Rank-move badges: after a settings change, rows whose rank moved show a
 // temporary ▲n / ▼n next to the ticker (CSS fades them out).
 let prevRank=null,lastRank={},labNames=[];
-const LABN=21;  // Lab heatmap window (sessions)
 const CW={"1M":21,"3M":63,"6M":126,"1Y":252};let cw=store.get("cw","3M");if(!(cw in CW))cw="3M";let lastCorr=null;
+let lw=store.get("lw","1M");if(!(lw in CW))lw="1M";  // cumulative heatmap window; 1M is daily, longer windows weekly
 const fmtDate=d=>{const [y,m,dd]=d.split("-");return new Date(+y,m-1,+dd).toLocaleDateString(undefined,{month:"short",day:"numeric"})};
 function apply(){
   const skip=S.skip?SKIP:0,vol=S.vol,wins=["6m","12m"].filter(w=>S.wins.has(w));
@@ -542,17 +543,21 @@ document.querySelectorAll("[data-vol]").forEach(x=>x.onclick=()=>{S.vol=x.datase
 document.querySelectorAll("[data-skip]").forEach(x=>x.onclick=()=>{S.skip=x.dataset.skip==="1";save();apply()});
 apply();
 // ---- Lab: cumulative 21-day log return, day by day, for every name above P95.
-function renderLab(){const el=$("hm");if(!el)return;
-  const names=labNames.filter(t=>PX[t]&&PX[t].length>LABN);
-  $("labsub").textContent=names.length?`${names.length} names above P95 · running sum of daily log returns over the last ${LABN} sessions · ${$("sum").textContent}`:"No names above P95 in the current universe.";
+function renderLab(){const el=$("hm");if(!el)return;const W=CW[lw],step=W>21?5:1,nc=Math.round(W/step);
+  document.querySelectorAll("[data-lw]").forEach(x=>x.setAttribute("aria-pressed",x.dataset.lw===lw));
+  $("labttl").textContent=`${lw} cumulative log return`;
+  const names=labNames.filter(t=>PX[t]&&PX[t].length>W);
+  $("labsub").textContent=names.length?`${names.length} names above P95 · log return since the close ${W} sessions ago, ${step===1?"daily":"at each week's end"} · ${$("sum").textContent}`:"No names above P95 with enough history.";
   if(!names.length){el.innerHTML="";renderCorr([]);return}
-  const rows=names.map(t=>{const p=PX[t],L=p.length,base=p[L-1-LABN];let c=0;return[t,p.slice(L-LABN).map(v=>Math.log(v/base))]});
+  // column k = cumulative return at the session step*(nc-1-k) sessions before the latest (last column = latest price)
+  const rows=names.map(t=>{const p=PX[t],L=p.length,base=p[L-1-W];return[t,Array.from({length:nc},(_,k)=>Math.log(p[L-1-(nc-1-k)*step]/base))]});
   const all=rows.flatMap(r=>r[1].map(Math.abs)).sort((a,c)=>a-c),vmax=all[Math.floor(all.length*.95)]||1e-9;
-  const ds=DATES.slice(DATES.length-LABN);
+  const ds=Array.from({length:nc},(_,k)=>DATES[DATES.length-1-(nc-1-k)*step]);
   const col=v=>`color-mix(in oklab,var(${v>=0?"--pos":"--neg"}) ${Math.round(Math.min(1,Math.abs(v)/vmax)*100)}%,var(--chip))`;
   const p=v=>(v>=0?"+":"−")+Math.abs(v*100).toFixed(1)+"%";
-  el.style.setProperty("--cols",LABN);
-  el.innerHTML=`<div></div>`+ds.map((d,i)=>`<div class=cl>${i%5===0||i===LABN-1?fmtDate(d).replace(/^\w+ /,""):""}</div>`).join("")+`<div class=cl>${LABN}D</div>`+
+  el.style.setProperty("--cols",nc);el.classList.toggle("dense",nc>30);
+  const every=nc>30?Math.ceil(nc/8):5;
+  el.innerHTML=`<div></div>`+ds.map((d,i)=>`<div class=cl>${i%every===0||i===nc-1?fmtDate(d).replace(/^\w+ /,""):""}</div>`).join("")+`<div class=cl>${lw}</div>`+
     rows.map(([t,cs])=>`<div class=rl data-t="${t}">${t}</div>`+cs.map((v,i)=>`<div class=c data-t="${t}" data-i="${i}" style="background:${col(v)}" title="${t} ${fmtDate(ds[i])} ${p(v)}"></div>`).join("")+`<div class=rv style="color:${cs[cs.length-1]>=0?"var(--pos)":"var(--neg)"}">${p(cs[cs.length-1])}</div>`).join("");
   $("lgmin").textContent="−"+(vmax*100).toFixed(0)+"%";$("lgmax").textContent="+"+(vmax*100).toFixed(0)+"%";
   el.onclick=e=>{const c=e.target.closest(".c"),r=e.target.closest(".rl");if(r){showDetail(r.dataset.t);return}
@@ -612,6 +617,7 @@ function renderCorr(names){const el=$("cm");if(!el)return;const W=CW[cw];
     const tip=document.createElement("div");tip.className="hmtip";tip.innerHTML=`${use[i]} × ${use[j]} · ρ <b>${C[i][j].toFixed(2)}</b>`;
     tip.style.left=(c.offsetLeft+c.offsetWidth/2)+"px";tip.style.top=c.offsetTop+"px";el.appendChild(tip)};
   lastCorr={use,C,ord}}
+document.querySelectorAll("[data-lw]").forEach(x=>x.onclick=()=>{lw=x.dataset.lw;store.set("lw",lw);renderLab()});
 document.querySelectorAll("[data-cw]").forEach(x=>x.onclick=()=>{cw=x.dataset.cw;store.set("cw",cw);renderCorr(labNames.filter(t=>PX[t]))});
 // ---- Tabs
 const setTab=t=>{b.dataset.tab=t;store.set("tab",t);document.querySelectorAll("[data-tab]").forEach(x=>x.setAttribute("aria-selected",x.dataset.tab===t));if(t==="lab")renderLab()};
@@ -756,10 +762,11 @@ def render_html(prices, caps, as_of, meta=None, dates=None, intra=None):
 <div class=menu id=dispmenu role=menu aria-label=Display hidden><button role=menuitemradio data-disp=raw>Raw</button><button role=menuitemradio data-disp=z>Z-score</button><button role=menuitemradio data-disp=pct>Percentile</button><button role=menuitemradio data-disp=rank>Rank</button></div></th>
 <th id=tday class=num hidden><button class=sortb id=sortday data-dir="" aria-label="Sort by today's change" title="Tap to sort, long-press for 5-day"><span id=daylbl>Today</span>{SORT}</button></th></tr></thead><tbody id=rows></tbody></table>
 </div>
-<section id=lab aria-label=Lab><div class=labh><h2>21D cumulative log return</h2><p id=labsub></p></div>
+<section id=lab aria-label=Lab><div class=labh><h2 id=labttl>1M cumulative log return</h2><p id=labsub></p></div>
+<div class=seg role=group aria-label="Cumulative window" style="margin-bottom:10px"><button data-lw=1M>1M</button><button data-lw=3M>3M</button><button data-lw=6M>6M</button><button data-lw=1Y>1Y</button></div>
 <div class=hm id=hm></div>
 <div class=lg><span id=lgmin></span><span class=bar></span><span id=lgmax></span></div>
-<p class=dnote>Each cell is the log return from the close 21 sessions ago to that day's close (the latest price for today); the right column is the full 21-day figure. Colour saturates at the 95th percentile of the grid. Tap a cell for the value, a ticker for its chart.</p>
+<p class=dnote>Each cell is the log return from the close at the start of the window to that column's close (the latest price for today); 1M shows every session, longer windows the end of each 5-session week. The right column is the full-window figure. Colour saturates at the 95th percentile of the grid. Tap a cell for the value, a ticker for its chart.</p>
 <div class="labh labsec"><h2>Correlation clusters</h2><p id=cmsub></p></div>
 <div class=seg role=group aria-label="Correlation window" style="margin-bottom:10px"><button data-cw=1M>1M</button><button data-cw=3M>3M</button><button data-cw=6M>6M</button><button data-cw=1Y>1Y</button></div>
 <div class=cm id=cm></div>
