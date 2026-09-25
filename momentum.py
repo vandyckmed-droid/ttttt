@@ -110,24 +110,36 @@ def rank(top=100):
 
 def render_html(results, as_of):
     rows = "\n".join(
-        f"<tr><td>{i}</td><td>{s}</td><td class={'pos' if r >= 0 else 'neg'}>{r:.4f}</td></tr>"
+        f"<tr><td>{i}</td><td>{s}</td><td>{r:.2f}</td></tr>"
         for i, (s, r) in enumerate(results, 1)
     )
-    return f"""<!doctype html><html><head><meta charset=utf-8>
+    return f"""<!doctype html><html lang=en><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
-<title>12M Return Ranking</title><style>
-body{{font:14px/1.4 system-ui,sans-serif;max-width:420px;margin:24px auto;padding:0 16px;background:#fff;color:#111}}
-table{{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}}
-th,td{{padding:4px 8px;border-bottom:1px solid #eee;text-align:left}}
+<title>12M Return Ranker</title><style>
+:root{{--bg:#f7f7f6;--fg:#111418;--muted:#6b7078;--card:#efefee;--line:#e2e2e0}}
+@media (prefers-color-scheme:dark){{:root{{--bg:#111214;--fg:#f2f2f2;--muted:#9a9ea5;--card:#1c1d20;--line:#2a2b2f}}}}
+*{{box-sizing:border-box}}
+body{{margin:0;background:var(--bg);color:var(--fg);font:17px/1.4 -apple-system,BlinkMacSystemFont,"Inter","Segoe UI",system-ui,sans-serif}}
+main{{max-width:560px;margin:0 auto;padding:40px 0 48px}}
+header,.card{{margin:0 16px}}
+h1{{font-size:clamp(26px,8.4vw,34px);font-weight:700;letter-spacing:-.02em;margin:0 0 8px}}
+.sub{{color:var(--muted);margin:0 0 20px}}
+.card{{background:var(--card);border-radius:14px;padding:14px 16px;font-size:clamp(12px,3.4vw,14px);color:var(--muted);line-height:1.8}}
+.card b{{color:var(--fg);font-weight:500;opacity:.8}}
+table{{width:100%;border-collapse:collapse;margin-top:20px;font-variant-numeric:tabular-nums}}
+th{{background:var(--card);color:var(--muted);font-weight:500;font-size:15px;text-align:left;padding:14px 20px;white-space:nowrap}}
+td{{padding:14px 20px;border-bottom:1px solid var(--line)}}
+th:nth-child(1),td:nth-child(1){{width:4.5em}}
 th:last-child,td:last-child{{text-align:right}}
-.pos{{color:#137333}}.neg{{color:#b3261e}}small{{color:#666}}
-@media (prefers-color-scheme:dark){{body{{background:#111;color:#eee}}th,td{{border-color:#333}}
-.pos{{color:#6dd58c}}.neg{{color:#f28b82}}small{{color:#999}}}}
-</style></head><body>
-<h2>12-month log return</h2>
-<small>Top {len(results)} S&amp;P 500 by market cap &middot; ln(P_now / P_252) &middot; updated {as_of}</small>
-<table><thead><tr><th>Rank</th><th>Ticker</th><th>12m log return</th></tr></thead>
-<tbody>{rows}</tbody></table></body></html>"""
+tr:last-child td{{border-bottom:0}}
+</style></head><body><main>
+<header><h1>12M Return Ranker</h1>
+<p class=sub>Top ~{len(results)} S&amp;P 500 by market cap<br>Latest available price used<br><small>As of {as_of}</small></p></header>
+<div class=card><b>Universe:</b> ~{len(results)} largest S&amp;P 500 companies<br>
+<b>Prices:</b> daily historical prices (separate from latest quote)<br>
+<b>Metric:</b> raw 12-month log return = ln(P<sub>now</sub> / P<sub>252</sub>)</div>
+<table><thead><tr><th>Rank</th><th>Ticker</th><th>Raw 12M Log Return</th></tr></thead>
+<tbody>{rows}</tbody></table></main></body></html>"""
 
 
 def main():
@@ -143,7 +155,7 @@ def main():
     for i, (s, r) in enumerate(results, 1):
         print(f"{i:>4}  {s:<6}  {r:>14.4f}")
     if args.html:
-        as_of = datetime.now(NY).strftime("%Y-%m-%d %H:%M %Z")
+        as_of = datetime.now(NY).strftime("%b %-d, %Y")
         Path(args.html).write_text(render_html(results, as_of))
 
 
