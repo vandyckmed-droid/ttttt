@@ -16,6 +16,7 @@ Python 3.9+, stdlib only. Output: Rank, Ticker, 12m log return.
 - Returns are summed daily log returns. `P_now` is the live quote, so it is intraday while the market is open.
 - `--window 6m` uses the last 126 sessions instead of 252, annualized (× 252/126, or × 252/105 with skip).
 - `--window blend --w6 0.5` blends (the page's Blend with both 6M and 12M selected is 50/50) the two annualized scores: w6·score₆ₘ + (1 − w6)·score₁₂ₘ.
+- `--z` shows cross-sectional z-scores over the ranked stocks (Settings → Z-score). With a blend, each window is z-scored first, then averaged.
 - `--vol` divides by the annualized sample std dev (× √252) of the same daily log returns (Settings toggle on the page).
 - `--skip` excludes the most recent 21 sessions and annualizes the 231-day window: ln(P_21 / P_252) × 252/231. On the web page this is the Settings toggle.
 - `--caps mega,large` limits the universe to market-cap buckets: Mega ≥ $200B, Large $10–200B, Mid $2–10B, Small < $2B.
