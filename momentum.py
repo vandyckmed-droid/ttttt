@@ -7,8 +7,9 @@ P_now  = most recent available price (FMP quote; intraday while the market is op
 P_252  = close 252 trading sessions before the P_now session (FMP daily history)
 
 Computed as the sum of daily log returns. With skip (--skip / page toggle) the
-sum excludes the most recent 21 sessions, i.e. ln(P_21 / P_252). With --vol /
-the page toggle, the sum is divided by the sample std dev of the same daily returns.
+sum excludes the most recent 21 sessions and is annualized: ln(P_21 / P_252) * 252/231.
+With --vol / the page toggle, it is divided by the annualized sample std dev of the
+same daily returns (stdev * sqrt(252)).
 
 Data is stored under data/:
     data/universe.json        top-N constituents by market cap
@@ -34,6 +35,7 @@ from zoneinfo import ZoneInfo
 BASE = "https://financialmodelingprep.com/stable"
 LOOKBACK = 252
 SKIP = 21
+TRADING_DAYS = 252  # annualization factor
 MODES = ("full_raw", "skip_raw", "full_vol", "skip_vol")
 DATA = Path(__file__).parent / "data"
 NY = ZoneInfo("America/New_York")
@@ -105,13 +107,17 @@ def daily_log_returns(prices, skip=0):
 
 
 def log_return_12m(prices, skip=0, vol_adjust=False):
-    """Sum of daily log returns over the window; with vol_adjust, divided by the
-    sample standard deviation of those same daily log returns."""
+    """Annualized sum of daily log returns over the window: sum * 252 / n, where
+    n is the number of daily returns (252 with no skip, so the factor is 1).
+    With vol_adjust, divided by the annualized sample std dev of those same
+    daily returns, stdev * sqrt(252)."""
     rets = daily_log_returns(prices, skip)
     if rets is None:
         return None
-    total = sum(rets)
-    return total / statistics.stdev(rets) if vol_adjust else total
+    ann_return = sum(rets) * TRADING_DAYS / len(rets)
+    if vol_adjust:
+        return ann_return / (statistics.stdev(rets) * math.sqrt(TRADING_DAYS))
+    return ann_return
 
 
 def rank(top=100):
@@ -189,15 +195,15 @@ body:not(.skip) .when-skip,body.skip .when-full,body:not(.vol) .when-vol,body.vo
 <p class=sub>Top ~{n} S&amp;P 500 by market cap<br><span class=when-full>Latest available price used</span><span class=when-skip>Skipping most recent {SKIP} trading days</span><br><small>As of {as_of}</small></p></header>
 <div class=card><b>Universe:</b> ~{n} largest S&amp;P 500 companies<br>
 <b>Prices:</b> daily historical prices (separate from latest quote)<br>
-<b>Metric:</b> <span class=when-full>raw 12-month log return = ln(P<sub>now</sub> / P<sub>252</sub>)</span><span class=when-skip>sum of daily log returns = ln(P<sub>{SKIP}</sub> / P<sub>252</sub>)</span><span class=when-vol> &divide; &sigma; of daily log returns (same window)</span></div>
-<table><thead><tr><th>Rank</th><th>Ticker</th><th><span class=when-raw>Raw 12M Log Return</span><span class=when-vol>Return / &sigma;</span></th></tr></thead>
+<b>Metric:</b> <span class=when-full>raw 12-month log return = ln(P<sub>now</sub> / P<sub>252</sub>)</span><span class=when-skip>ln(P<sub>{SKIP}</sub> / P<sub>252</sub>) &times; 252/{LOOKBACK - SKIP} (annualized)</span><span class=when-vol> &divide; annualized &sigma; of daily log returns (same window, &times; &radic;252)</span></div>
+<table><thead><tr><th>Rank</th><th>Ticker</th><th><span class=when-raw><span class=when-full>Raw 12M Log Return</span><span class=when-skip>Ann. Log Return</span></span><span class=when-vol>Ann. Return / Ann. &sigma;</span></th></tr></thead>
 {bodies}</table></main>
 <div class=scrim id=scrim></div>
 <section class=sheet role=dialog aria-label=Settings><div class=grip></div><h2>Settings</h2>
 <label class=opt><span class=t>Skip {SKIP} trading days</span><span class=sw><input type=checkbox id=skip><span></span></span>
 <span class=o>Optional</span><p>Use prior close instead of the most recent {SKIP} trading sessions.</p></label>
 <label class=opt><span class=t>Divide by volatility</span><span class=sw><input type=checkbox id=vol><span></span></span>
-<span class=o>Optional</span><p>Divide by the standard deviation of daily log returns over the same window.</p></label></section>
+<span class=o>Optional</span><p>Divide by the annualized standard deviation of daily log returns over the same window.</p></label></section>
 <script>
 const b=document.body,opts={{skip:"skip21",vol:"volAdj"}};
 const apply=()=>{{
