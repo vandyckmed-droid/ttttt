@@ -7,20 +7,22 @@ P_now  = most recent available price (FMP quote; intraday while the market is op
 P_252  = close 252 trading sessions before the P_now session (FMP daily history)
 
 Computed as the sum of daily log returns. With skip (--skip / page toggle) the
-sum excludes the most recent 21 sessions, i.e. ln(P_21 / P_252).
+sum excludes the most recent 21 sessions, i.e. ln(P_21 / P_252). With --vol /
+the page toggle, the sum is divided by the sample std dev of the same daily returns.
 
 Data is stored under data/:
     data/universe.json        top-N constituents by market cap
     data/history/<SYM>.csv    daily closes (date,close), ascending
     data/quotes.json          latest quote per symbol (kept separate from history)
 
-Usage:  FMP_API_KEY=... python3 momentum.py [--top 100] [--skip] [--html index.html]
+Usage:  FMP_API_KEY=... python3 momentum.py [--top 100] [--skip] [--vol] [--html index.html]
 """
 import argparse
 import csv
 import json
 import math
 import os
+import statistics
 import sys
 import urllib.parse
 import urllib.request
@@ -32,6 +34,7 @@ from zoneinfo import ZoneInfo
 BASE = "https://financialmodelingprep.com/stable"
 LOOKBACK = 252
 SKIP = 21
+MODES = ("full_raw", "skip_raw", "full_vol", "skip_vol")
 DATA = Path(__file__).parent / "data"
 NY = ZoneInfo("America/New_York")
 
@@ -92,34 +95,44 @@ def price_series(history, quote):
     return closes + [quote["price"]]
 
 
-def log_return_12m(prices, skip=0):
-    """Sum of daily log returns from P_252 to P_now, optionally excluding the
-    most recent `skip` sessions (i.e. ending at the close `skip` sessions ago)."""
+def daily_log_returns(prices, skip=0):
+    """Daily log returns from P_252 to P_now, optionally excluding the most
+    recent `skip` sessions (i.e. ending at the close `skip` sessions ago)."""
     if len(prices) < LOOKBACK + 1:
         return None
     window = prices[-(LOOKBACK + 1):len(prices) - skip]
-    return sum(math.log(b / a) for a, b in zip(window, window[1:]))
+    return [math.log(b / a) for a, b in zip(window, window[1:])]
+
+
+def log_return_12m(prices, skip=0, vol_adjust=False):
+    """Sum of daily log returns over the window; with vol_adjust, divided by the
+    sample standard deviation of those same daily log returns."""
+    rets = daily_log_returns(prices, skip)
+    if rets is None:
+        return None
+    total = sum(rets)
+    return total / statistics.stdev(rets) if vol_adjust else total
 
 
 def rank(top=100):
-    """Returns {"full": [...], "skip": [...]} of (ticker, return), best first."""
+    """Returns {mode: [(ticker, value), ...]} best first, for every combination
+    of skip (full/skip) and volatility adjustment (raw/vol)."""
     (DATA / "history").mkdir(parents=True, exist_ok=True)
     symbols = load_universe(top)
     with ThreadPoolExecutor(max_workers=8) as ex:
         histories = dict(zip(symbols, ex.map(load_history, symbols)))
     quotes = load_quotes(symbols)
 
-    out = {"full": [], "skip": []}
+    out = {m: [] for m in MODES}
     for s in symbols:
         if s not in quotes or not histories[s]:
             continue
         prices = price_series(histories[s], quotes[s])
-        full, skipped = log_return_12m(prices), log_return_12m(prices, SKIP)
-        if full is None:
+        if len(prices) < LOOKBACK + 1:
             print(f"skip {s}: fewer than {LOOKBACK} sessions of history", file=sys.stderr)
             continue
-        out["full"].append((s, full))
-        out["skip"].append((s, skipped))
+        for m in MODES:
+            out[m].append((s, log_return_12m(prices, SKIP if m.startswith("skip") else 0, m.endswith("vol"))))
     for v in out.values():
         v.sort(key=lambda x: x[1], reverse=True)
     return out
@@ -131,7 +144,8 @@ def render_html(results, as_of):
             f"<tr><td>{i}</td><td>{s}</td><td>{r:.2f}</td></tr>" for i, (s, r) in enumerate(res, 1)
         )
 
-    n = len(results["full"])
+    n = len(results["full_raw"])
+    bodies = "".join(f"<tbody id={m}>{rows(results[m])}</tbody>" for m in MODES)
     return f"""<!doctype html><html lang=en><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>12M Return Ranker</title><style>
@@ -153,7 +167,8 @@ td{{padding:14px 20px;border-bottom:1px solid var(--line)}}
 th:nth-child(1),td:nth-child(1){{width:4.5em}}
 th:last-child,td:last-child{{text-align:right}}
 tr:last-child td{{border-bottom:0}}
-body:not(.skip) .when-skip,body.skip .when-full{{display:none}}
+body:not(.skip) .when-skip,body.skip .when-full,body:not(.vol) .when-vol,body.vol .when-raw{{display:none}}
+.opt+.opt{{margin-top:18px;padding-top:18px;border-top:1px solid var(--line)}}
 .scrim{{position:fixed;inset:0;background:rgba(0,0,0,.25);opacity:0;pointer-events:none;transition:opacity .2s}}
 .sheet{{position:fixed;left:0;right:0;bottom:0;max-width:560px;margin:0 auto;background:var(--sheet);border-radius:22px 22px 0 0;padding:10px 20px calc(28px + env(safe-area-inset-bottom));transform:translateY(105%);transition:transform .25s ease}}
 .open .scrim{{opacity:1;pointer-events:auto}}.open .sheet{{transform:none}}
@@ -174,18 +189,28 @@ body:not(.skip) .when-skip,body.skip .when-full{{display:none}}
 <p class=sub>Top ~{n} S&amp;P 500 by market cap<br><span class=when-full>Latest available price used</span><span class=when-skip>Skipping most recent {SKIP} trading days</span><br><small>As of {as_of}</small></p></header>
 <div class=card><b>Universe:</b> ~{n} largest S&amp;P 500 companies<br>
 <b>Prices:</b> daily historical prices (separate from latest quote)<br>
-<b>Metric:</b> <span class=when-full>raw 12-month log return = ln(P<sub>now</sub> / P<sub>252</sub>)</span><span class=when-skip>sum of daily log returns = ln(P<sub>{SKIP}</sub> / P<sub>252</sub>)</span></div>
-<table><thead><tr><th>Rank</th><th>Ticker</th><th>Raw 12M Log Return</th></tr></thead>
-<tbody class=when-full>{rows(results["full"])}</tbody><tbody class=when-skip>{rows(results["skip"])}</tbody></table></main>
+<b>Metric:</b> <span class=when-full>raw 12-month log return = ln(P<sub>now</sub> / P<sub>252</sub>)</span><span class=when-skip>sum of daily log returns = ln(P<sub>{SKIP}</sub> / P<sub>252</sub>)</span><span class=when-vol> &divide; &sigma; of daily log returns (same window)</span></div>
+<table><thead><tr><th>Rank</th><th>Ticker</th><th><span class=when-raw>Raw 12M Log Return</span><span class=when-vol>Return / &sigma;</span></th></tr></thead>
+{bodies}</table></main>
 <div class=scrim id=scrim></div>
 <section class=sheet role=dialog aria-label=Settings><div class=grip></div><h2>Settings</h2>
 <label class=opt><span class=t>Skip {SKIP} trading days</span><span class=sw><input type=checkbox id=skip><span></span></span>
-<span class=o>Optional</span><p>Use prior close instead of the most recent {SKIP} trading sessions.</p></label></section>
+<span class=o>Optional</span><p>Use prior close instead of the most recent {SKIP} trading sessions.</p></label>
+<label class=opt><span class=t>Divide by volatility</span><span class=sw><input type=checkbox id=vol><span></span></span>
+<span class=o>Optional</span><p>Divide by the standard deviation of daily log returns over the same window.</p></label></section>
 <script>
-const b=document.body,cb=document.getElementById("skip");
-try{{cb.checked=localStorage.getItem("skip21")==="1"}}catch(e){{}}
-const apply=()=>b.classList.toggle("skip",cb.checked);apply();
-cb.onchange=()=>{{apply();try{{localStorage.setItem("skip21",cb.checked?"1":"0")}}catch(e){{}}}};
+const b=document.body,opts={{skip:"skip21",vol:"volAdj"}};
+const apply=()=>{{
+  for(const id in opts)b.classList.toggle(id,document.getElementById(id).checked);
+  const m=(b.classList.contains("skip")?"skip":"full")+"_"+(b.classList.contains("vol")?"vol":"raw");
+  document.querySelectorAll("tbody").forEach(t=>t.hidden=t.id!==m);
+}};
+for(const id in opts){{
+  const cb=document.getElementById(id);
+  try{{cb.checked=localStorage.getItem(opts[id])==="1"}}catch(e){{}}
+  cb.onchange=()=>{{apply();try{{localStorage.setItem(opts[id],cb.checked?"1":"0")}}catch(e){{}}}};
+}}
+apply();
 document.getElementById("gear").onclick=()=>b.classList.add("open");
 document.getElementById("scrim").onclick=()=>b.classList.remove("open");
 document.onkeydown=e=>{{if(e.key==="Escape")b.classList.remove("open")}};
@@ -196,6 +221,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--top", type=int, default=100)
     ap.add_argument("--skip", action="store_true", help=f"print ranking skipping the last {SKIP} sessions")
+    ap.add_argument("--vol", action="store_true", help="divide by std dev of daily log returns (same window)")
     ap.add_argument("--html", metavar="PATH", help="also write the ranking as a static HTML page")
     args = ap.parse_args()
     if not os.environ.get("FMP_API_KEY"):
@@ -203,7 +229,8 @@ def main():
 
     results = rank(args.top)
     print(f"{'Rank':>4}  {'Ticker':<6}  {'12m log return':>14}")
-    for i, (s, r) in enumerate(results["skip" if args.skip else "full"], 1):
+    mode = ("skip" if args.skip else "full") + ("_vol" if args.vol else "_raw")
+    for i, (s, r) in enumerate(results[mode], 1):
         print(f"{i:>4}  {s:<6}  {r:>14.4f}")
     if args.html:
         as_of = datetime.now(NY).strftime("%b %-d, %Y %-I:%M %p %Z")
