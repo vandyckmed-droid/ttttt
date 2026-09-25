@@ -404,6 +404,14 @@ body[data-tab=lab] #ranktab,body:not([data-tab=lab]) #lab{display:none}
 .cm .dg svg{position:absolute;inset:0;width:100%;height:100%}
 .cm .dg path{fill:none;stroke:var(--muted);stroke-width:1.2}
 .labsec{margin-top:26px}
+.tm{position:relative;width:100%;aspect-ratio:1/1;margin:10px 0 6px;border-radius:12px;overflow:hidden}
+.tm .t{position:absolute;box-sizing:border-box;border:2px solid var(--bg);border-radius:6px;overflow:hidden;cursor:pointer;
+  display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;line-height:1.15;color:var(--fg)}
+.tm .t b{font-size:13px}.tm .t small{font-size:11px;opacity:.85}
+.tm .t.xs b{font-size:10px}.tm .t.xs small{display:none}
+.tm .t.on{outline:2px solid var(--fg);outline-offset:-3px}
+.bkctl{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;margin-top:8px}
+.bkctl .seg{min-width:11em}
 #bk{margin-top:4px}#bk tr.muted td{color:var(--muted)}#bk td{padding:9px 14px}#bk th{padding:8px 14px}
 .hmtip{position:absolute;z-index:3;background:var(--sheet);border:1px solid var(--line);border-radius:8px;padding:4px 8px;font-size:12px;
   white-space:nowrap;pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,.12);transform:translate(-50%,-110%)}
@@ -540,7 +548,8 @@ if(!S.wins.size)S.wins.add("12m");if(!S.idx.size)S.idx.add("500");
 const save=()=>{store.set("theme",S.theme);store.set("idx",[...S.idx].join(","));store.set("caps",[...S.caps].join(","));store.set("wins",[...S.wins].join(","));store.set("vol",S.vol?"1":"0");store.set("r2",S.r2?"1":"0");store.set("skip",S.skip?"1":"0");store.set("disp",S.disp);store.set("today",S.today?"1":"0");store.set("dmode",S.dmode)};
 // Rank-move badges: after a settings change, rows whose rank moved show a
 // temporary ▲n / ▼n next to the ticker (CSS fades them out).
-let prevRank=null,lastRank={},labNames=[];
+let prevRank=null,lastRank={},labNames=[],lastScoreOf=null,lastPoolRaw=[];
+let bsize=store.get("bsize","w")==="r"?"r":"w";  // basket treemap tile size: weight, or risk share w·σ
 const CW={"1M":21,"3M":63,"6M":126,"1Y":252};let cw=store.get("cw","3M");if(!(cw in CW))cw="3M";let lastCorr=null;
 let lw=store.get("lw","1M");if(!(lw in CW))lw="1M";  // cumulative heatmap window; 1M is daily, longer windows weekly
 let lv=store.get("lv","1")!=="0";  // heatmap cells: VolAdj of the running window (default) or raw cumulative return
@@ -601,6 +610,8 @@ function apply(){
   const mv=t=>{if(!prevRank||!(t in prevRank))return"";const d=prevRank[t]-rk[t];
     return d?`<span class="mv ${d>0?"mv-up":"mv-dn"}">${d>0?"\\u25b2":"\\u25bc"}${Math.abs(d)}</span>`:""};
   lastRank={};ranked.forEach(([t,v],i)=>lastRank[t]=[i,fmt(v,i)]);
+  lastScoreOf=r=>{const c=wins.map(w=>score(r,WIN[w],skip,vol,S.r2));return c.includes(null)?null:c.reduce((a,v)=>a+v,0)/c.length};
+  lastPoolRaw=rows.map(([,c])=>c.reduce((a,v)=>a+v,0)/c.length).sort((a,c)=>a-c);
   $("rows").innerHTML=n?order.map(([t,v,i])=>`<tr data-t="${t}"${line[i]?" class=q":""}><td>${mv(t)}${t}</td><td class=num style="color:${grad(i)}">${fmt(v,i)}</td>${S.today?day(chg[t]):""}</tr>`+
     (line[i]?`<tr class=qr><td><div class=ql>${line[i]}</div></td>`+`<td><div class=ql></div></td>`.repeat(ncol-1)+`</tr>`:"")).join("")
     :`<tr><td colspan=${ncol} class=empty>${S.caps.size?"No stocks in the selected market caps.":"Select at least one market cap."}</td></tr>`;
@@ -665,10 +676,40 @@ function renderLab(){const el=$("hm");if(!el)return;const W=CW[lw],step=W>21?5:1
   renderCorr(names);renderBasket()}
 // ---- Basket: tickers + weights from basket.json, with each name's rank in the
 // current pool (ranks come from the last apply()).
+// Squarified treemap (Bruls et al.): items sorted by area desc, areas in px².
+function squarify(items,x,y,w,h,out){if(!items.length)return;const side=Math.min(w,h);
+  const worst=row=>{const sum=row.reduce((a,i)=>a+i.a,0),mx=Math.max(...row.map(i=>i.a)),mn=Math.min(...row.map(i=>i.a));return Math.max(side*side*mx/(sum*sum),sum*sum/(side*side*mn))};
+  const row=[items[0]];let k=1;while(k<items.length&&worst(row.concat([items[k]]))<=worst(row))row.push(items[k++]);
+  const sum=row.reduce((a,i)=>a+i.a,0);
+  if(w>=h){const cw=sum/h;let cy=y;for(const i of row){const ch=i.a/cw;out.push({...i,x,y:cy,w:cw,h:ch});cy+=ch}squarify(items.slice(k),x+cw,y,w-cw,h,out)}
+  else{const ch=sum/w;let cx=x;for(const i of row){const cw=i.a/ch;out.push({...i,x:cx,y,w:cw,h:ch});cx+=cw}squarify(items.slice(k),x,y+ch,w,h-ch,out)}}
+function renderTreemap(rows){const box=$("tm");if(!box)return;const W=box.clientWidth||358,H=W;
+  document.querySelectorAll("[data-bsize]").forEach(x=>x.setAttribute("aria-pressed",x.dataset.bsize===bsize));
+  // names we have data for: score under the current settings, σ = SD of the trailing daily log returns (up to 1Y)
+  const items=rows.filter(([t])=>t in PX).map(([t,w])=>{const p=PX[t],r=p.slice(1).map((v,i)=>Math.log(v/p[i])).slice(-YEAR);
+    const m=r.reduce((a,v)=>a+v,0)/r.length,sd=Math.sqrt(r.reduce((a,v)=>a+(v-m)**2,0)/(r.length-1));
+    return{t,w,sd,score:lastScoreOf?lastScoreOf(p.slice(1).map((v,i)=>Math.log(v/p[i]))):null}});
+  if(!items.length){box.innerHTML="";return}
+  const wsum=items.reduce((a,i)=>a+i.w,0),rsum=items.reduce((a,i)=>a+i.w*i.sd,0);
+  for(const i of items){i.wshare=i.w/wsum;i.rshare=i.w*i.sd/rsum;i.size=bsize==="r"?i.rshare:i.wshare;i.a=i.size*W*H}
+  items.sort((a,c)=>c.a-a.a);const out=[];squarify(items,0,0,W,H,out);
+  // colour: where the score would sit in the current pool (same green→neutral→red scale as the table)
+  const n=lastPoolRaw.length,pct=v=>{if(v===null||!n)return .5;let lo=0,hi=n;while(lo<hi){const mid=(lo+hi)>>1;if(lastPoolRaw[mid]<v)lo=mid+1;else hi=mid}return n>1?lo/n:.5};
+  const col=q=>{const end=q>=.5?"--pos":"--neg";return`color-mix(in oklab,var(${end}) ${Math.round(Math.sqrt(Math.abs(q-.5)*2)*100)}%,var(--chip))`};
+  box.innerHTML=out.map(i=>{const q=pct(i.score),lr=lastRank[i.t],small=i.w<8||i.h<8?" xs":"";
+    return`<div class="t${i.w<48||i.h<34?" xs":""}" data-t="${i.t}" style="left:${i.x}px;top:${i.y}px;width:${i.w}px;height:${i.h}px;background:${col(q)}"><b>${i.t}</b><small>${(100*i.size).toFixed(1)}%</small></div>`}).join("");
+  $("tmsub").textContent=`${items.length} of ${rows.length} names have data · tile size = ${bsize==="r"?"risk share w·σ (σ = trailing 1Y daily)":"weight, renormalised over these names"} · colour = score under the current settings`;
+  box.onclick=e=>{const d=e.target.closest(".t");box.querySelectorAll(".t.on").forEach(x=>x.classList.remove("on"));const old=$("bksec").querySelector(".hmtip");if(old)old.remove();
+    if(!d)return;d.classList.add("on");const i=items.find(x=>x.t===d.dataset.t),lr=lastRank[i.t];
+    const tip=document.createElement("div");tip.className="hmtip";tip.style.position="static";tip.style.transform="none";tip.style.display="inline-block";tip.style.marginTop="6px";
+    tip.innerHTML=`<b>${i.t}</b> · weight ${(100*i.wshare).toFixed(1)}% · risk share ${(100*i.rshare).toFixed(1)}% · σ ${(i.sd*Math.sqrt(YEAR)*100).toFixed(0)}% ann. · score ${i.score===null?"n/a":i.score.toFixed(2)}${lr?` · rank #${lr[0]+1}`:" · not in current pool"}`;
+    $("tmtip").innerHTML="";$("tmtip").appendChild(tip)};
+  box.ondblclick=e=>{const d=e.target.closest(".t");if(d)showDetail(d.dataset.t)}}
 function renderBasket(){const el=$("bk");if(!el)return;
   if(!BASKET||!BASKET.rows||!BASKET.rows.length){$("bksec").hidden=true;return}$("bksec").hidden=false;
   const rows=BASKET.rows,n=Object.keys(lastRank).length,inPool=rows.filter(([t])=>t in lastRank).length;
   $("bksub").textContent=`${rows.length} names · as of ${BASKET.asOf} · ${inPool} in the current pool of ${n}`;
+  renderTreemap(rows);
   const chg=Object.fromEntries(R.map(r=>[r[0],r[3].d1]));
   const pc=v=>v==null?"":`<span class="${v>0?"up-c":v<0?"dn-c":"fl-c"}">${v>=0?"+":"−"}${Math.abs(v*100).toFixed(2)}%</span>`;
   el.innerHTML=`<thead><tr><th>Ticker</th><th class=num>Weight</th><th class=num>Rank</th><th class=num>Today</th></tr></thead><tbody>`+
@@ -727,6 +768,8 @@ function renderCorr(names){const el=$("cm");if(!el)return;const W=CW[cw];
     tip.style.left=(c.offsetLeft+c.offsetWidth/2)+"px";tip.style.top=c.offsetTop+"px";el.appendChild(tip)};
   lastCorr={use,C,ord}}
 document.querySelectorAll("[data-lw]").forEach(x=>x.onclick=()=>{lw=x.dataset.lw;store.set("lw",lw);renderLab()});
+document.querySelectorAll("[data-bsize]").forEach(x=>x.onclick=()=>{bsize=x.dataset.bsize;store.set("bsize",bsize);renderBasket()});
+addEventListener("resize",()=>{if(BASKET)renderTreemap(BASKET.rows)});
 document.querySelectorAll("[data-lv]").forEach(x=>x.onclick=()=>{lv=x.dataset.lv==="1";store.set("lv",lv?"1":"0");renderLab()});
 document.querySelectorAll("[data-cw]").forEach(x=>x.onclick=()=>{cw=x.dataset.cw;store.set("cw",cw);renderCorr(labNames.filter(t=>PX[t]))});
 // ---- Tabs
@@ -899,6 +942,9 @@ def render_html(prices, caps, as_of, meta=None, dates=None, intra=None):
 <div class=lg><span id=cmmin></span><span class=bar></span><span id=cmmax></span></div>
 <p class=dnote>Rows and columns follow the dendrogram's optimal leaf order, so neighbours are the most correlated pairs; the tree on the left shows the average-linkage merges (further left = merged at a larger 1−ρ). Colour saturates at the 95th percentile of |ρ| off the diagonal. Tap a cell for ρ, a ticker for its chart.</p>
 <div id=bksec hidden><div class="labh labsec"><h2>Basket</h2><p id=bksub></p></div>
+<div class=bkctl><p class=dnote style="margin:0" id=tmsub></p><div class=seg role=group aria-label="Tile size"><button data-bsize=w>Weight</button><button data-bsize=r>Risk</button></div></div>
+<div class=tm id=tm></div><div id=tmtip></div>
+<p class=dnote>Tap a tile for details, double-tap for its chart. Risk sizes tiles by weight × volatility: a volatile name takes a bigger share of the basket's risk than its weight suggests, a stable one a smaller share.</p>
 <table id=bk></table>
 <p class=dnote>Weights are shares of the basket. Rank is the name's position in the current ranking (— if it is in the data but filtered out by Index/Universe, n/a if it is outside both indexes). Tap a ticker for its chart.</p></div></section>
 </main>
