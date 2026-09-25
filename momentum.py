@@ -9,14 +9,15 @@ P_252  = close 252 trading sessions before the P_now session (FMP daily history)
 Computed as the sum of daily log returns. With skip (--skip / page toggle) the
 sum excludes the most recent 21 sessions and is annualized: ln(P_21 / P_252) * 252/231.
 With --vol / the page toggle, it is divided by the annualized sample std dev of the
-same daily returns (stdev * sqrt(252)).
+same daily returns (stdev * sqrt(252)). --window 6m uses the last 126 sessions
+instead (annualized by 252/126, or 252/105 with skip).
 
 Data is stored under data/:
     data/universe.json        top-N constituents by market cap
     data/history/<SYM>.csv    daily closes (date,close), ascending
     data/quotes.json          latest quote per symbol (kept separate from history)
 
-Usage:  FMP_API_KEY=... python3 momentum.py [--top 100] [--skip] [--vol] [--html index.html]
+Usage:  FMP_API_KEY=... python3 momentum.py [--top 100] [--window 12m|6m] [--skip] [--vol] [--html index.html]
 """
 import argparse
 import csv
@@ -36,7 +37,7 @@ BASE = "https://financialmodelingprep.com/stable"
 LOOKBACK = 252
 SKIP = 21
 TRADING_DAYS = 252  # annualization factor
-MODES = ("full_raw", "skip_raw", "full_vol", "skip_vol")
+WINDOWS = {"12m": LOOKBACK, "6m": 126}
 DATA = Path(__file__).parent / "data"
 NY = ZoneInfo("America/New_York")
 
@@ -97,61 +98,54 @@ def price_series(history, quote):
     return closes + [quote["price"]]
 
 
-def daily_log_returns(prices, skip=0):
-    """Daily log returns from P_252 to P_now, optionally excluding the most
-    recent `skip` sessions (i.e. ending at the close `skip` sessions ago)."""
-    if len(prices) < LOOKBACK + 1:
+def daily_log_returns(prices, lookback=LOOKBACK):
+    """The last `lookback` daily log returns, ending at P_now."""
+    if len(prices) < lookback + 1:
         return None
-    window = prices[-(LOOKBACK + 1):len(prices) - skip]
+    window = prices[-(lookback + 1):]
     return [math.log(b / a) for a, b in zip(window, window[1:])]
 
 
-def log_return_12m(prices, skip=0, vol_adjust=False):
-    """Annualized sum of daily log returns over the window: sum * 252 / n, where
-    n is the number of daily returns (252 with no skip, so the factor is 1).
-    With vol_adjust, divided by the annualized sample std dev of those same
-    daily returns, stdev * sqrt(252)."""
-    rets = daily_log_returns(prices, skip)
-    if rets is None:
-        return None
-    ann_return = sum(rets) * TRADING_DAYS / len(rets)
+def score(rets, window=LOOKBACK, skip=0, vol_adjust=False):
+    """Annualized sum of daily log returns over the last `window` sessions,
+    excluding the most recent `skip`: sum * 252 / n, n = window - skip (factor 1
+    for the plain 12-month window). With vol_adjust, divided by the annualized
+    sample std dev of those same daily returns, stdev * sqrt(252).
+    The page's JavaScript mirrors this exactly."""
+    r = rets[len(rets) - window:len(rets) - skip]
+    ann_return = sum(r) * TRADING_DAYS / len(r)
     if vol_adjust:
-        return ann_return / (statistics.stdev(rets) * math.sqrt(TRADING_DAYS))
+        return ann_return / (statistics.stdev(r) * math.sqrt(TRADING_DAYS))
     return ann_return
 
 
-def rank(top=100):
-    """Returns {mode: [(ticker, value), ...]} best first, for every combination
-    of skip (full/skip) and volatility adjustment (raw/vol)."""
+def load_returns(top=100):
+    """{ticker: last 252 daily log returns ending at P_now}, universe order."""
     (DATA / "history").mkdir(parents=True, exist_ok=True)
     symbols = load_universe(top)
     with ThreadPoolExecutor(max_workers=8) as ex:
         histories = dict(zip(symbols, ex.map(load_history, symbols)))
     quotes = load_quotes(symbols)
 
-    out = {m: [] for m in MODES}
+    out = {}
     for s in symbols:
         if s not in quotes or not histories[s]:
             continue
-        prices = price_series(histories[s], quotes[s])
-        if len(prices) < LOOKBACK + 1:
+        rets = daily_log_returns(price_series(histories[s], quotes[s]))
+        if rets is None:
             print(f"skip {s}: fewer than {LOOKBACK} sessions of history", file=sys.stderr)
             continue
-        for m in MODES:
-            out[m].append((s, log_return_12m(prices, SKIP if m.startswith("skip") else 0, m.endswith("vol"))))
-    for v in out.values():
-        v.sort(key=lambda x: x[1], reverse=True)
+        out[s] = rets
     return out
 
 
-def render_html(results, as_of):
-    def rows(res):
-        return "".join(
-            f"<tr><td>{i}</td><td>{s}</td><td>{r:.2f}</td></tr>" for i, (s, r) in enumerate(res, 1)
-        )
+def rank(returns, **kw):
+    return sorted(((s, score(r, **kw)) for s, r in returns.items()), key=lambda x: x[1], reverse=True)
 
-    n = len(results["full_raw"])
-    bodies = "".join(f"<tbody id={m}>{rows(results[m])}</tbody>" for m in MODES)
+
+def render_html(returns, as_of):
+    n = len(returns)
+    data = json.dumps({s: [round(x, 6) for x in r] for s, r in returns.items()}, separators=(",", ":"))
     return f"""<!doctype html><html lang=en><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>12M Return Ranker</title><style>
@@ -173,10 +167,10 @@ td{{padding:14px 20px;border-bottom:1px solid var(--line)}}
 th:nth-child(1),td:nth-child(1){{width:4.5em}}
 th:last-child,td:last-child{{text-align:right}}
 tr:last-child td{{border-bottom:0}}
-body:not(.skip) .when-skip,body.skip .when-full,body:not(.vol) .when-vol,body.vol .when-raw{{display:none}}
+body:not(.skip) .when-skip,body.skip .when-full{{display:none}}
 .opt+.opt{{margin-top:18px;padding-top:18px;border-top:1px solid var(--line)}}
 .scrim{{position:fixed;inset:0;background:rgba(0,0,0,.25);opacity:0;pointer-events:none;transition:opacity .2s}}
-.sheet{{position:fixed;left:0;right:0;bottom:0;max-width:560px;margin:0 auto;background:var(--sheet);border-radius:22px 22px 0 0;padding:10px 20px calc(28px + env(safe-area-inset-bottom));transform:translateY(105%);transition:transform .25s ease}}
+.sheet{{position:fixed;left:0;right:0;bottom:0;max-width:560px;margin:0 auto;background:var(--sheet);border-radius:22px 22px 0 0;padding:10px 20px calc(28px + env(safe-area-inset-bottom));max-height:88vh;overflow:auto;transform:translateY(105%);transition:transform .25s ease}}
 .open .scrim{{opacity:1;pointer-events:auto}}.open .sheet{{transform:none}}
 .grip{{width:40px;height:5px;border-radius:3px;background:var(--line);margin:0 auto 18px}}
 .sheet h2{{font-size:24px;margin:0 0 14px;padding-bottom:14px;border-bottom:1px solid var(--line)}}
@@ -190,26 +184,43 @@ body:not(.skip) .when-skip,body.skip .when-full,body:not(.vol) .when-vol,body.vo
 .sw input:checked+span{{background:var(--on)}}.sw input:checked+span:after{{transform:translateX(20px)}}
 .sw input:focus-visible+span{{outline:2px solid var(--on);outline-offset:2px}}
 </style></head><body><main>
-<header><h1>12M Return Ranker</h1>
+<header><h1><span id=wlabel>12M</span> Return Ranker</h1>
 <button class=gear id=gear aria-label=Settings><svg width=22 height=22 viewBox="0 0 24 24" fill=currentColor><path d="M19.4 13a7.5 7.5 0 0 0 0-2l2.1-1.6-2-3.5-2.5 1a7.4 7.4 0 0 0-1.7-1L15 3.3h-4l-.4 2.6a7.4 7.4 0 0 0-1.7 1l-2.5-1-2 3.5L6.6 11a7.5 7.5 0 0 0 0 2l-2.2 1.6 2 3.5 2.5-1a7.4 7.4 0 0 0 1.7 1l.4 2.6h4l.4-2.6a7.4 7.4 0 0 0 1.7-1l2.5 1 2-3.5zM13 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z" transform="translate(-1 0)"/></svg></button>
 <p class=sub>Top ~{n} S&amp;P 500 by market cap<br><span class=when-full>Latest available price used</span><span class=when-skip>Skipping most recent {SKIP} trading days</span><br><small>As of {as_of}</small></p></header>
 <div class=card><b>Universe:</b> ~{n} largest S&amp;P 500 companies<br>
 <b>Prices:</b> daily historical prices (separate from latest quote)<br>
-<b>Metric:</b> <span class=when-full>raw 12-month log return = ln(P<sub>now</sub> / P<sub>252</sub>)</span><span class=when-skip>ln(P<sub>{SKIP}</sub> / P<sub>252</sub>) &times; 252/{LOOKBACK - SKIP} (annualized)</span><span class=when-vol> &divide; annualized &sigma; of daily log returns (same window, &times; &radic;252)</span></div>
-<table><thead><tr><th>Rank</th><th>Ticker</th><th><span class=when-raw><span class=when-full>Raw 12M Log Return</span><span class=when-skip>Ann. Log Return</span></span><span class=when-vol>Ann. Return / Ann. &sigma;</span></th></tr></thead>
-{bodies}</table></main>
+<b>Metric:</b> <span id=metric></span></div>
+<table><thead><tr><th>Rank</th><th>Ticker</th><th id=col></th></tr></thead>
+<tbody id=rows></tbody></table></main>
 <div class=scrim id=scrim></div>
 <section class=sheet role=dialog aria-label=Settings><div class=grip></div><h2>Settings</h2>
+<label class=opt><span class=t>6-month window</span><span class=sw><input type=checkbox id=six><span></span></span>
+<span class=o>Optional</span><p>Use the last {WINDOWS["6m"]} trading sessions instead of {LOOKBACK} (annualized).</p></label>
 <label class=opt><span class=t>Skip {SKIP} trading days</span><span class=sw><input type=checkbox id=skip><span></span></span>
 <span class=o>Optional</span><p>Use prior close instead of the most recent {SKIP} trading sessions.</p></label>
 <label class=opt><span class=t>Divide by volatility</span><span class=sw><input type=checkbox id=vol><span></span></span>
 <span class=o>Optional</span><p>Divide by the annualized standard deviation of daily log returns over the same window.</p></label></section>
 <script>
-const b=document.body,opts={{skip:"skip21",vol:"volAdj"}};
+const DATA={data},SKIP={SKIP},YEAR={TRADING_DAYS},WIN={{twelve:{LOOKBACK},six:{WINDOWS["6m"]}}};
+const b=document.body,opts={{six:"win6m",skip:"skip21",vol:"volAdj"}},on=id=>document.getElementById(id).checked;
+// Mirrors score() in momentum.py.
+function score(r,win,skip,vol){{
+  const x=r.slice(r.length-win,r.length-skip),n=x.length,sum=x.reduce((a,v)=>a+v,0),ann=sum*YEAR/n;
+  if(!vol)return ann;
+  const m=sum/n,sd=Math.sqrt(x.reduce((a,v)=>a+(v-m)**2,0)/(n-1));
+  return ann/(sd*Math.sqrt(YEAR));
+}}
 const apply=()=>{{
-  for(const id in opts)b.classList.toggle(id,document.getElementById(id).checked);
-  const m=(b.classList.contains("skip")?"skip":"full")+"_"+(b.classList.contains("vol")?"vol":"raw");
-  document.querySelectorAll("tbody").forEach(t=>t.hidden=t.id!==m);
+  const six=on("six"),skip=on("skip")?SKIP:0,vol=on("vol"),win=six?WIN.six:WIN.twelve,M=six?"6M":"12M",n=win-skip;
+  b.classList.toggle("skip",!!skip);
+  document.getElementById("wlabel").textContent=M;
+  const ann=n===YEAR?"":` &times; ${{YEAR}}/${{n}} (annualized)`;
+  document.getElementById("metric").innerHTML=
+    `${{ann?"":"raw "+(six?"6":"12")+"-month log return = "}}ln(P<sub>${{skip?skip:"now"}}</sub> / P<sub>${{win}}</sub>)${{ann}}`+
+    (vol?" &divide; annualized &sigma; of daily log returns (same window, &times; &radic;252)":"");
+  document.getElementById("col").innerHTML=vol?"Ann. Return / Ann. &sigma;":ann?"Ann. Log Return":`Raw ${{M}} Log Return`;
+  const ranked=Object.entries(DATA).map(([t,r])=>[t,score(r,win,skip,vol)]).sort((a,c)=>c[1]-a[1]);
+  document.getElementById("rows").innerHTML=ranked.map(([t,v],i)=>`<tr><td>${{i+1}}</td><td>${{t}}</td><td>${{v.toFixed(2)}}</td></tr>`).join("");
 }};
 for(const id in opts){{
   const cb=document.getElementById(id);
@@ -227,20 +238,21 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--top", type=int, default=100)
     ap.add_argument("--skip", action="store_true", help=f"print ranking skipping the last {SKIP} sessions")
+    ap.add_argument("--window", choices=WINDOWS, default="12m", help="lookback window")
     ap.add_argument("--vol", action="store_true", help="divide by std dev of daily log returns (same window)")
     ap.add_argument("--html", metavar="PATH", help="also write the ranking as a static HTML page")
     args = ap.parse_args()
     if not os.environ.get("FMP_API_KEY"):
         sys.exit("FMP_API_KEY is not set")
 
-    results = rank(args.top)
-    print(f"{'Rank':>4}  {'Ticker':<6}  {'12m log return':>14}")
-    mode = ("skip" if args.skip else "full") + ("_vol" if args.vol else "_raw")
-    for i, (s, r) in enumerate(results[mode], 1):
-        print(f"{i:>4}  {s:<6}  {r:>14.4f}")
+    returns = load_returns(args.top)
+    ranked = rank(returns, window=WINDOWS[args.window], skip=SKIP if args.skip else 0, vol_adjust=args.vol)
+    print(f"{'Rank':>4}  {'Ticker':<6}  {'score':>10}")
+    for i, (s, r) in enumerate(ranked, 1):
+        print(f"{i:>4}  {s:<6}  {r:>10.4f}")
     if args.html:
         as_of = datetime.now(NY).strftime("%b %-d, %Y %-I:%M %p %Z")
-        Path(args.html).write_text(render_html(results, as_of))
+        Path(args.html).write_text(render_html(returns, as_of))
 
 
 if __name__ == "__main__":
