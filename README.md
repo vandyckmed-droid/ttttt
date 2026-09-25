@@ -14,6 +14,7 @@ Minimal prototype: rank the ~100 largest S&P 500 stocks by raw 12-month log retu
 Python 3.9+, stdlib only. Output: Rank, Ticker, 12m log return.
 
 - Returns are summed daily log returns. `P_now` is the live quote, so it is intraday while the market is open.
+- `--vol` divides by the sample std dev of the same daily log returns (Settings toggle on the page).
 - `--skip` excludes the most recent 21 sessions: ln(P_21 / P_252). On the web page this is the Settings toggle.
 - `--html PATH` writes the page (both rankings; the toggle switches between them).
 
