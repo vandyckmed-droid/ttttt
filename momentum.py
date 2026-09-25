@@ -703,12 +703,14 @@ function renderTreemap(rows){const box=$("tm");if(!box)return;const W=box.client
   const n=lastPoolRaw.length,pct=v=>{if(v===null||!n)return .5;let lo=0,hi=n;while(lo<hi){const mid=(lo+hi)>>1;if(lastPoolRaw[mid]<v)lo=mid+1;else hi=mid}return n>1?lo/n:.5};
   const colq=q=>{const end=q>=.5?"--pos":"--neg";return`color-mix(in oklab,var(${end}) ${Math.round(Math.sqrt(Math.abs(q-.5)*2)*100)}%,var(--chip))`};
   // Other modes: a signed value per name, green positive / red negative, saturating at vmax
-  const colv=(v,vmax)=>v===null?"var(--chip)":`color-mix(in oklab,var(${v>=0?"--pos":"--neg"}) ${Math.round(Math.min(1,Math.abs(v)/vmax)*100)}%,var(--chip))`;
+  const colv=(v,vmax,ease)=>{if(v===null)return"var(--chip)";let k=Math.min(1,Math.abs(v)/vmax);if(ease)k=Math.sqrt(k);return`color-mix(in oklab,var(${v>=0?"--pos":"--neg"}) ${Math.round(k*100)}%,var(--chip))`};
   const rets=t=>{const p=PX[t];return p.slice(1).map((v,i)=>Math.log(v/p[i]))};
   // ΔRank: the same scoring on the pool as it stood LAG sessions ago (cached per apply()).
   if(bcol==="drank"&&(!lagCache||lagCache.n!==applyN)){const now=[],lag=[];
     for(const [t,,r] of lastPool){const a=lastScoreOf(r),b=lastScoreOf(r.slice(0,r.length-LAG));if(a!==null)now.push([t,a]);if(b!==null)lag.push([t,b])}
-    const rk=arr=>{const o={};arr.sort((x,y)=>y[1]-x[1]).forEach(([t,v],i)=>o[t]=[i,v]);return o};lagCache={n:applyN,now:rk(now),lag:rk(lag)}}
+    const rk=arr=>{const o={};arr.sort((x,y)=>y[1]-x[1]).forEach(([t,v],i)=>o[t]=[i,v]);return o};const N=rk(now),Lg=rk(lag);
+    // dispersion of rank moves across the whole pool: the colour scale saturates at one SD
+    const dv=Object.keys(N).filter(t=>t in Lg).map(t=>Lg[t][0]-N[t][0]),sd=dv.length>1?Math.sqrt(dv.reduce((a,v)=>a+v*v,0)/dv.length):1;lagCache={n:applyN,now:N,lag:Lg,sd:Math.max(1,sd)}}
   // Corr / Risk%: daily log returns of these names over the trailing CORRW sessions (aligned on the latest close)
   let cov=null;if(bcol==="corr"||bcol==="risk"){const L=Math.min(CORRW,...items.map(i=>PX[i.t].length-1)),X=items.map(i=>rets(i.t).slice(-L));
     const mu=X.map(x=>x.reduce((a,v)=>a+v,0)/L);cov=X.map((x,a)=>X.map((y,b)=>{let s=0;for(let k=0;k<L;k++)s+=(x[k]-mu[a])*(y[k]-mu[b]);return s/(L-1)}))}
@@ -719,13 +721,13 @@ function renderTreemap(rows){const box=$("tm");if(!box)return;const W=box.client
       const rho=items.length>1?s/(items.length-1):0;i.rho=rho;i.lbl=`mean ρ with the others ${rho.toFixed(2)}`}
     else if(bcol==="risk"){const a=items.indexOf(i),w=items.map(x=>x.wshare);let pv=0,mc=0;for(let b=0;b<items.length;b++){mc+=w[b]*cov[a][b];for(let c=0;c<items.length;c++)pv+=w[b]*w[c]*cov[b][c]}
       const rc=pv?w[a]*mc/pv:w[a];i.rc=rc;i.v=-Math.log(Math.max(1e-6,rc/w[a]));i.lbl=`risk contribution ${(100*rc).toFixed(1)}% vs weight ${(100*w[a]).toFixed(1)}%`}}
-  if(bcol==="drank"){vmax=Math.max(1,...items.map(i=>i.v===null?0:Math.abs(i.v)));desc=`rank change over the last ${LAG} sessions under the current settings (green = moved up, saturates at ±${vmax})`}
+  if(bcol==="drank"){vmax=lagCache.sd;desc=`rank change over the last ${LAG} sessions under the current settings (green = moved up; full colour at one SD of the pool's rank moves, ±${Math.round(vmax)})`}
   else if(bcol==="corr"){const mr=items.reduce((a,i)=>a+i.rho,0)/items.length;for(const i of items)i.v=mr-i.rho;vmax=Math.max(1e-9,...items.map(i=>Math.abs(i.v)));
     desc=`mean correlation of daily returns with the other basket names over the trailing ${CORRW} sessions, against the basket average ρ̄ = ${mr.toFixed(2)} (red = more correlated than average, the same bet held again; saturates at ±${vmax.toFixed(2)})`}
   else if(bcol==="risk"){vmax=Math.log(2);desc=`share of basket variance explained (w·Σw), relative to weight: red contributes more risk than its weight, green less (saturates at 2× / ½×)`}
   else desc="score under the current settings, on the ranking's percentile scale";
   items.sort((a,c)=>c.a-a.a);const out=[];squarify(items,0,0,W,H,out);
-  box.innerHTML=out.map(i=>`<div class="t${i.w<48||i.h<34?" xs":""}" data-t="${i.t}" style="left:${i.x}px;top:${i.y}px;width:${i.w}px;height:${i.h}px;background:${bcol==="score"?colq(pct(i.score)):colv(i.v,vmax)}"><b>${i.t}</b><small>${(100*i.size).toFixed(1)}%</small></div>`).join("");
+  box.innerHTML=out.map(i=>`<div class="t${i.w<48||i.h<34?" xs":""}" data-t="${i.t}" style="left:${i.x}px;top:${i.y}px;width:${i.w}px;height:${i.h}px;background:${bcol==="score"?colq(pct(i.score)):colv(i.v,vmax,bcol==="drank")}"><b>${i.t}</b><small>${(100*i.size).toFixed(1)}%</small></div>`).join("");
   $("tmsub").textContent=`${items.length} of ${rows.length} names have data · size = ${bsize==="r"?"risk share w·σ (σ = trailing 1Y daily)":"weight, renormalised over these names"} · colour = ${desc}`;
   box.onclick=e=>{const d=e.target.closest(".t");box.querySelectorAll(".t.on").forEach(x=>x.classList.remove("on"));const old=$("bksec").querySelector(".hmtip");if(old)old.remove();
     if(!d)return;d.classList.add("on");const i=items.find(x=>x.t===d.dataset.t),lr=lastRank[i.t];
