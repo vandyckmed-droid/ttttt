@@ -195,12 +195,19 @@ GEAR = ('<svg width=22 height=22 viewBox="0 0 24 24" fill=currentColor><path d="
         '7.4 0 0 0-1.7-1L15 3.3h-4l-.4 2.6a7.4 7.4 0 0 0-1.7 1l-2.5-1-2 3.5L6.6 11a7.5 7.5 0 0 0 0 2l-2.2 1.6 2 3.5 2.5-1a7.4 7.4 0 0 0 '
         '1.7 1l.4 2.6h4l.4-2.6a7.4 7.4 0 0 0 1.7-1l2.5 1 2-3.5zM13 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z" transform="translate(-1 0)"/></svg>')
 
-CSS = """
-:root{--bg:#f5f5f7;--fg:#111418;--muted:#6e737b;--chip:#e9e9ec;--sel:#fff;--line:#e3e3e6;--sheet:#fff;--pos:#1e9e4a;--neg:#d23b30;
-  --shadow:0 1px 3px rgba(0,0,0,.12)}
-@media (prefers-color-scheme:dark){:root{--bg:#0b0b0c;--fg:#f2f2f4;--muted:#8e9299;--chip:#1c1c1f;--sel:#3a3a3e;--line:#26262a;
-  --sheet:#161618;--pos:#34d266;--neg:#ff6b60;--shadow:none}}
-*{box-sizing:border-box}
+# Theme tokens. --pos/--mid/--neg are the ends and middle of the value gradient.
+LIGHT = ("--bg:#f5f5f7;--fg:#111418;--muted:#6e737b;--chip:#e9e9ec;--sel:#fff;--line:#e3e3e6;--sheet:#fff;"
+         "--pos:#0f9d47;--mid:#8a8f97;--neg:#d8342a;--shadow:0 1px 3px rgba(0,0,0,.12);color-scheme:light")
+DARK = ("--bg:#0b0b0c;--fg:#f2f2f4;--muted:#8e9299;--chip:#1c1c1f;--sel:#3a3a3e;--line:#26262a;--sheet:#161618;"
+        "--pos:#3ee07a;--mid:#8e9299;--neg:#ff5f55;--shadow:none;color-scheme:dark")
+
+# Appearance: Auto follows the OS; Light/Dark set data-theme on <html>.
+CSS = f"""
+:root{{{LIGHT}}}
+@media (prefers-color-scheme:dark){{:root:not([data-theme=light]){{{DARK}}}}}
+:root[data-theme=dark]{{{DARK}}}
+:root[data-theme=light]{{{LIGHT}}}
+""" + """*{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.4 -apple-system,BlinkMacSystemFont,"Inter","Segoe UI",system-ui,sans-serif}
 main{max-width:560px;margin:0 auto;padding:24px 16px 40px}
 header{position:relative;text-align:center;padding:52px 0 20px}
@@ -213,7 +220,6 @@ th:first-child{border-radius:10px 0 0 10px}th:last-child{border-radius:0 10px 10
 td{padding:12px 14px;border-bottom:1px solid var(--line)}
 th:nth-child(1),td:nth-child(1){width:4.2em}
 th:last-child,td:last-child{text-align:right}
-.pos{color:var(--pos)}.neg{color:var(--neg)}
 .empty{color:var(--muted);text-align:center!important;padding:28px}
 tr.q td{border-bottom:0}
 tr.qr td{padding:18px 0;border-bottom:0}  /* room above and below the divider */
@@ -253,11 +259,15 @@ function score(r,win,skip,vol){
   return ann/(sd*Math.sqrt(YEAR));
 }
 const S={caps:new Set(store.get("caps",BUCKETS.join(",")).split(",").filter(c=>BUCKETS.includes(c))),
-  wins:new Set(store.get("wins","12m").split(",").filter(w=>w in WIN)),vol:store.get("vol","0")==="1",skip:store.get("skip","0")==="1"};
+  wins:new Set(store.get("wins","12m").split(",").filter(w=>w in WIN)),vol:store.get("vol","0")==="1",skip:store.get("skip","0")==="1",
+  theme:store.get("theme","auto")};
+if(!["auto","light","dark"].includes(S.theme))S.theme="auto";
 if(!S.wins.size)S.wins.add("12m");
-const save=()=>{store.set("caps",[...S.caps].join(","));store.set("wins",[...S.wins].join(","));store.set("vol",S.vol?"1":"0");store.set("skip",S.skip?"1":"0")};
+const save=()=>{store.set("theme",S.theme);store.set("caps",[...S.caps].join(","));store.set("wins",[...S.wins].join(","));store.set("vol",S.vol?"1":"0");store.set("skip",S.skip?"1":"0")};
 function apply(){
   const skip=S.skip?SKIP:0,vol=S.vol,wins=["6m","12m"].filter(w=>S.wins.has(w));
+  if(S.theme==="auto")delete document.documentElement.dataset.theme;else document.documentElement.dataset.theme=S.theme;
+  document.querySelectorAll("[data-theme-opt]").forEach(x=>x.setAttribute("aria-pressed",x.dataset.themeOpt===S.theme));
   document.querySelectorAll("[data-cap]").forEach(x=>x.setAttribute("aria-pressed",S.caps.has(x.dataset.cap)));
   document.querySelectorAll("[data-win]").forEach(x=>x.setAttribute("aria-pressed",S.wins.has(x.dataset.win)));
   document.querySelectorAll("[data-vol]").forEach(x=>x.setAttribute("aria-pressed",String(x.dataset.vol==="1")===String(vol)));
@@ -272,13 +282,19 @@ function apply(){
   // k-th percentile (e.g. P95 = top 5% above the line).
   const n=ranked.length,q={};
   for(const k of PCTS){const c=Math.round(n*(1-k/100));if(c>0&&c<n)q[c-1]="P"+k}
-  $("rows").innerHTML=n?ranked.map(([t,v],i)=>`<tr${q[i]?" class=q":""}><td>${i+1}</td><td>${t}</td><td class=${v>=0?"pos":"neg"}>${fmt(v)}</td></tr>`+
+  // Value text colour follows the distribution: its percentile in the current
+  // ranking, green at the top through neutral at the median to red at the bottom
+  // (sqrt easing so colour builds quickly away from the median).
+  const grad=i=>{const t=n>1?1-i/(n-1):1,end=t>=.5?"--pos":"--neg";
+    return `color-mix(in oklab,var(${end}) ${Math.round(Math.sqrt(Math.abs(t-.5)*2)*100)}%,var(--mid))`};
+  $("rows").innerHTML=n?ranked.map(([t,v],i)=>`<tr${q[i]?" class=q":""}><td>${i+1}</td><td>${t}</td><td style="color:${grad(i)}">${fmt(v)}</td></tr>`+
     (q[i]?`<tr class=qr><td><div class=ql></div></td><td><div class=ql>${q[i]}</div></td><td><div class=ql></div></td></tr>`:"")).join("")
     :`<tr><td colspan=3 class=empty>${S.caps.size?"No stocks in the selected market caps.":"Select at least one market cap."}</td></tr>`;
 }
 document.querySelectorAll("[data-cap]").forEach(x=>x.onclick=()=>{const c=x.dataset.cap;S.caps.has(c)?S.caps.delete(c):S.caps.add(c);save();apply()});
 document.querySelectorAll("[data-win]").forEach(x=>x.onclick=()=>{const w=x.dataset.win;
   if(S.wins.has(w)){if(S.wins.size>1)S.wins.delete(w)}else S.wins.add(w);save();apply()});
+document.querySelectorAll("[data-theme-opt]").forEach(x=>x.onclick=()=>{S.theme=x.dataset.themeOpt;save();apply()});
 document.querySelectorAll("[data-vol]").forEach(x=>x.onclick=()=>{S.vol=x.dataset.vol==="1";save();apply()});
 document.querySelectorAll("[data-skip]").forEach(x=>x.onclick=()=>{S.skip=x.dataset.skip==="1";save();apply()});
 apply();
@@ -309,6 +325,7 @@ def render_html(prices, caps, as_of):
 <div class=row><p class=lbl>Blend</p><div class=seg role=group aria-label=Blend><button data-win=6m>6M</button><button data-win=12m>12M</button></div></div>
 <div class=row><p class=lbl>Volatility</p><div class=seg role=group aria-label=Volatility><button data-vol=0>Off</button><button data-vol=1>On</button></div></div>
 <div class=row><p class=lbl>Skip</p><div class=seg role=group aria-label=Skip><button data-skip=0>None</button><button data-skip=1>{SKIP}</button></div></div>
+<div class=row><p class=lbl>Appearance</p><div class=seg role=group aria-label=Appearance><button data-theme-opt=auto>Auto</button><button data-theme-opt=light>Light</button><button data-theme-opt=dark>Dark</button></div></div>
 </section>
 <script>{consts}{JS}</script></body></html>"""
 
