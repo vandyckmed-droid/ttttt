@@ -24,12 +24,12 @@ Python 3.9+, stdlib only. Output: Rank, Ticker, 12m log return.
 - `--skip` excludes the most recent 21 sessions and annualizes the 231-day window: ln(P_21 / P_252) × 252/231. On the web page this is the Settings toggle.
 - `--caps mega,large` limits the universe to market-cap buckets: Mega ≥ $200B, Large $10–200B, Mid $2–10B, Small < $2B.
   On the page these are the Universe buttons (multi-select). A bucket may be empty (the S&P 500 rarely has Small caps).
-- `--html PATH` writes the page. It embeds each ticker's recent prices for all ~500 constituents and scores/ranks in the browser, so the Settings toggles re-rank instantly. Divider lines labelled P95/P75/P50/P25/P5 mark the percentile cut-offs of the current ranking, and value text is coloured by percentile (green → neutral → red). Settings → Appearance switches Auto/Light/Dark. When a setting changes the ranking, moved rows briefly show ▲n/▼n next to the ticker. Settings → Today adds a column with each stock's latest price change vs the prior close; tap its header to sort, long-press to switch to the 5-trading-day log return (5D).
+- `--html PATH` writes the page. It embeds each ticker's recent prices for all ~500 constituents and scores/ranks in the browser, so the Settings toggles re-rank instantly. Divider lines labelled P95/P75/P50/P25/P5 mark the percentile cut-offs of the current ranking, and value text is coloured by percentile (green → neutral → red). Settings → Appearance switches Auto/Light/Dark. When a setting changes the ranking, moved rows briefly show ▲n/▼n next to the ticker. Tap a row for a per-ticker view: company, sector · industry, price, day change, and a 1D (5-min bars) / 1W / 1M / 3M / 6M / 1Y chart. Settings → Today adds a column with each stock's latest price change vs the prior close; tap its header to sort, long-press to switch to the 5-trading-day log return (5D).
 
 ## Web page
 
 https://vandyckmed-droid.github.io/ttttt/ — rebuilt by `.github/workflows/refresh.yml` every 15 min during
-US market hours and daily after close. Requires the repo secret `FMP_API_KEY`. Daily closes are fetched once per New York day (cached in
+US market hours and daily after close (the ↻ button pulls the newest build in place). Requires the repo secret `FMP_API_KEY`. Daily closes are fetched once per New York day (cached in
 `data/history`, and by `actions/cache` in the workflow); intraday runs only fetch batch quotes.
 
 ## Data (written to `data/`, git-ignored)
