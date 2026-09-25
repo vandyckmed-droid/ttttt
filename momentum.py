@@ -21,6 +21,7 @@ Data is stored under data/:
 Usage:  FMP_API_KEY=... python3 momentum.py [--caps mega,large,mid,small] [--window 12m|6m|blend [--w6 0.5]] [--skip] [--vol] [--html index.html]
 """
 import argparse
+from collections import Counter
 import csv
 import json
 import math
@@ -299,6 +300,9 @@ def load_prices(top=None):
     universe = load_universe(top)
     caps = {u["symbol"]: u["marketCap"] for u in universe}
     meta = {u["symbol"]: {k: u[k] for k in ("name", "sector", "industry", "index")} for u in universe}
+    for m in meta.values():
+        m["group"], m["sector"] = classify(m["sector"], m["industry"])
+    print_taxonomy_report(meta)
     symbols = list(caps)
     with ThreadPoolExecutor(max_workers=8) as ex:
         histories = dict(zip(symbols, ex.map(load_history, symbols)))
@@ -553,9 +557,30 @@ let prevRank=null,lastRank={},labNames=[],lastScoreOf=null,lastPoolRaw=[];
 let bsize=store.get("bsize","w")==="r"?"r":"w";  // basket treemap tile size: weight, or risk share w·σ
 // basket treemap tile colour: score, rank change over LAG sessions, mean correlation with the
 // rest of the basket, or risk contribution vs weight
-const BCOL={score:"Score",drank:"\\u0394Rank",corr:"Corr",risk:"Risk%"},LAG=21,CORRW=126;
+const BCOL={score:"Score",drank:"\\u0394Rank",resid:"Resid",corr:"Corr",risk:"Risk%"},LAG=21,CORRW=126;
 let bcol=store.get("bcol","score");if(!(bcol in BCOL))bcol="score";
-let lastPool=[],applyN=0,lagCache=null;
+let lastPool=[],applyN=0,lagCache=null,pbCache=null;
+// Residual pullback (mirrors residual_pullback()): eps_t = r_t - leave-one-out mean of the peer
+// group (>= MIN_PEERS other eligible names in the current pool, else the sector); resid21 = sum of
+// eps over the last PULL_W sessions; sigma = SD of eps over the PULL_VOL sessions before that;
+// pullback = -resid21 / (sigma * sqrt(PULL_W)). Raw and benchmark returns are kept for audit.
+const PULL_W=21,PULL_VOL=126,MIN_PEERS=5;
+function pullbacks(){if(pbCache&&pbCache.n===applyN)return pbCache;const need=PULL_W+PULL_VOL;
+  const names=lastPool.filter(([,,r])=>r.length>=need).map(([t,,r])=>[t,r.slice(-need)]);
+  const grp={},sec={},cls={},tail={};
+  for(const [t,r] of names){const m=META[t]||[],g=m[3]||"",sc=m[1]||"";cls[t]=[g,sc];tail[t]=r;if(g)(grp[g]=grp[g]||[]).push(t);(sec[sc]=sec[sc]||[]).push(t)}
+  const sums={},acc=(key,members)=>{const s=new Float64Array(need);for(const t of members){const r=tail[t];for(let i=0;i<need;i++)s[i]+=r[i]}sums[key]=[s,members.length]};
+  for(const g in grp)acc("g:"+g,grp[g]);for(const sc in sec)acc("s:"+sc,sec[sc]);
+  const out={};
+  for(const [t,r] of names){const [g,sc]=cls[t];let key=null,label="none";
+    if(g&&grp[g].length-1>=MIN_PEERS){key="g:"+g;label="group"}else if(sec[sc].length>1){key="s:"+sc;label="sector"}
+    let bench,peers=0;if(key){const [tot,n]=sums[key];bench=r.map((v,i)=>(tot[i]-v)/(n-1));peers=n-1}else bench=r.map(()=>0);
+    const eps=r.map((v,i)=>v-bench[i]),hist=eps.slice(0,PULL_VOL),mu=hist.reduce((a,v)=>a+v,0)/hist.length;
+    const sigma=Math.sqrt(hist.reduce((a,v)=>a+(v-mu)**2,0)/(hist.length-1));
+    const resid21=eps.slice(PULL_VOL).reduce((a,v)=>a+v,0),raw21=r.slice(PULL_VOL).reduce((a,v)=>a+v,0);
+    out[t]={raw21,bench21:raw21-resid21,resid21,sigma,pullback:-resid21/(Math.max(sigma,1e-6)*Math.sqrt(PULL_W)),benchmark:label,peerGroup:label==="group"?g:label==="sector"?sc:null,peers}}
+  Object.keys(out).sort((a,c)=>out[c].pullback-out[a].pullback).forEach((t,i)=>out[t].rank=i+1);
+  pbCache={n:applyN,out,total:names.length};return pbCache}
 const CW={"1M":21,"3M":63,"6M":126,"1Y":252};let cw=store.get("cw","3M");if(!(cw in CW))cw="3M";let lastCorr=null;
 let lw=store.get("lw","1M");if(!(lw in CW))lw="1M";  // cumulative heatmap window; 1M is daily, longer windows weekly
 let lv=store.get("lv","1")!=="0";  // heatmap cells: VolAdj of the running window (default) or raw cumulative return
@@ -717,11 +742,14 @@ function renderTreemap(rows){const box=$("tm");if(!box)return;const W=box.client
   let desc,vmax=1,fmtv=v=>v.toFixed(2);
   for(const i of items){const lg=lagCache&&lagCache.lag[i.t],nw=lagCache&&lagCache.now[i.t];i.v=null;i.lbl="";
     if(bcol==="drank"){if(lg&&nw){i.v=lg[0]-nw[0];i.lbl=`rank ${nw[0]+1} (was ${lg[0]+1})`}}
+    else if(bcol==="resid"){const pb=pullbacks(),p=pb.out[i.t];if(p){const f=v=>(v>=0?"+":"−")+Math.abs(v*100).toFixed(1)+"%";i.v=-p.pullback;
+      i.lbl=`resid 21D ${p.pullback>=0?"pullback":"run-up"} ${Math.abs(p.pullback).toFixed(2)}σ · raw ${f(p.raw21)} vs ${p.benchmark==="none"?"no benchmark":p.peerGroup+" "+f(p.bench21)+" ("+p.peers+" peers)"} · pullback rank ${p.rank} of ${pb.total}`}}
     else if(bcol==="corr"){const a=items.indexOf(i);let s=0;for(let b=0;b<items.length;b++)if(b!==a)s+=cov[a][b]/Math.sqrt(cov[a][a]*cov[b][b]);
       const rho=items.length>1?s/(items.length-1):0;i.rho=rho;i.lbl=`mean ρ with the others ${rho.toFixed(2)}`}
     else if(bcol==="risk"){const a=items.indexOf(i),w=items.map(x=>x.wshare);let pv=0,mc=0;for(let b=0;b<items.length;b++){mc+=w[b]*cov[a][b];for(let c=0;c<items.length;c++)pv+=w[b]*w[c]*cov[b][c]}
       const rc=pv?w[a]*mc/pv:w[a];i.rc=rc;i.v=-Math.log(Math.max(1e-6,rc/w[a]));i.lbl=`risk contribution ${(100*rc).toFixed(1)}% vs weight ${(100*w[a]).toFixed(1)}%`}}
   if(bcol==="drank"){vmax=lagCache.sd;desc=`rank change over the last ${LAG} sessions under the current settings (green = moved up; full colour at one SD of the pool's rank moves, ±${Math.round(vmax)})`}
+  else if(bcol==="resid"){vmax=2;desc=`21-session residual return vs the name's peer group (leave-one-out mean; sector if under ${MIN_PEERS} peers in the pool), scaled by its own residual σ from the prior ${PULL_VOL} sessions: green beat its peers, red pulled back (full colour at ±2σ)`}
   else if(bcol==="corr"){const mr=items.reduce((a,i)=>a+i.rho,0)/items.length;for(const i of items)i.v=mr-i.rho;vmax=Math.max(1e-9,...items.map(i=>Math.abs(i.v)));
     desc=`mean correlation of daily returns with the other basket names over the trailing ${CORRW} sessions, against the basket average ρ̄ = ${mr.toFixed(2)} (red = more correlated than average, the same bet held again; saturates at ±${vmax.toFixed(2)})`}
   else if(bcol==="risk"){vmax=Math.log(2);desc=`share of basket variance explained (w·Σw), relative to weight: red contributes more risk than its weight, green less (saturates at 2× / ½×)`}
@@ -731,7 +759,7 @@ function renderTreemap(rows){const box=$("tm");if(!box)return;const W=box.client
   $("tmsub").textContent=`${items.length} of ${rows.length} names have data · size = ${bsize==="r"?"risk share w·σ (σ = trailing 1Y daily)":"weight, renormalised over these names"} · colour = ${desc}`;
   box.onclick=e=>{const d=e.target.closest(".t");box.querySelectorAll(".t.on").forEach(x=>x.classList.remove("on"));const old=$("bksec").querySelector(".hmtip");if(old)old.remove();
     if(!d)return;d.classList.add("on");const i=items.find(x=>x.t===d.dataset.t),lr=lastRank[i.t];
-    const tip=document.createElement("div");tip.className="hmtip";tip.style.position="static";tip.style.transform="none";tip.style.display="inline-block";tip.style.marginTop="6px";
+    const tip=document.createElement("div");tip.className="hmtip";tip.style.position="static";tip.style.transform="none";tip.style.display="block";tip.style.whiteSpace="normal";tip.style.marginTop="6px";
     tip.innerHTML=`<b>${i.t}</b> · weight ${(100*i.wshare).toFixed(1)}% · risk share ${(100*i.rshare).toFixed(1)}% · σ ${(i.sd*Math.sqrt(YEAR)*100).toFixed(0)}% ann. · score ${i.score===null?"n/a":i.score.toFixed(2)}${lr?` · rank #${lr[0]+1}`:" · not in current pool"}${i.lbl?` · <b>${i.lbl}</b>`:""}`;
     $("tmtip").innerHTML="";$("tmtip").appendChild(tip)};
   box.ondblclick=e=>{const d=e.target.closest(".t");if(d)showDetail(d.dataset.t)}}
@@ -907,7 +935,7 @@ function drawChart(t){
 function showDetail(t,keep){cur=t;
   if(getKey()&&!keep&&!(liveIntraCache[t]>Date.now()-6e4)){liveIntraCache[t]=Date.now();
     liveIntraday(t).then(it=>{if(it){INTRA[t]=it;if(cur===t)drawChart(t)}}).catch(()=>{})}const p=PX[t],m=META[t]||["","",""],L=p.length,d1=p[L-1]-p[L-2];
-  const ix=(R.find(x=>x[0]===t)||[])[4];$("dtick").textContent=t;$("dname").textContent=m[0];$("dsec").textContent=[ix?"S&P "+ix:"",m[1],m[2]].filter(Boolean).join(" · ");
+  const ix=(R.find(x=>x[0]===t)||[])[4];$("dtick").textContent=t;$("dname").textContent=m[0];$("dsec").textContent=[ix?"S&P "+ix:"",m[1],m[2],m[3]&&m[3]!==m[2]?"peers: "+m[3]:""].filter(Boolean).join(" · ");
   $("dprice").textContent=money(p[L-1]);const c=$("dchg");c.textContent=`${sgnMoney(d1)} (${pct(d1/p[L-2])}) today`;c.style.color=d1>=0?"var(--pos)":"var(--neg)";
   const lr=lastRank[t];$("drank").textContent=lr?`Rank #${lr[0]+1} of ${Object.keys(lastRank).length} · ${lr[1]} · ${$("sum").textContent.replace(/ \\u2022 /g," · ")}`:"Not in the current universe";
   document.querySelectorAll("[data-hz]").forEach(x=>x.setAttribute("aria-pressed",x.dataset.hz===hz));$("hzl").textContent=hz;
@@ -924,9 +952,206 @@ def build_payload(prices, caps, as_of, meta=None, dates=None, intra=None):
     """Everything the page needs. It is embedded in the HTML and also written as
     data.json so the page's refresh button can pull a newer build in place."""
     return {"asOf": as_of, "data": [[s, cap_bucket(caps[s]), p, (meta or {}).get(s, {}).get("index", "500")] for s, p in prices.items()],
-            "meta": {s: [m["name"], m["sector"], m["industry"]] for s, m in (meta or {}).items()},
+            "meta": {s: [m["name"], m["sector"], m["industry"], m.get("group") or ""] for s, m in (meta or {}).items()},
             "dates": dates or [], "intra": intra or {}, "basket": load_basket()}
 
+
+
+# ---- Peer-group taxonomy -------------------------------------------------
+# FMP labels its S&P 500 constituents with its own sector names and the S&P 400
+# list (Wikipedia) uses GICS names; SECTOR_ALIAS folds the GICS names into the
+# FMP ones so both indexes share 11 sectors. PEER_GROUPS maps every FMP/GICS
+# industry string seen in the universe to one of 37 economically coherent peer
+# groups, each with a fixed parent sector. The mapping is static: a name's
+# group never depends on which universe is selected. An industry that is not
+# listed here falls back to its (aliased) sector, and taxonomy_report() says so.
+SECTOR_ALIAS = {"Information Technology": "Technology", "Financials": "Financial Services", "Health Care": "Healthcare",
+                "Consumer Discretionary": "Consumer Cyclical", "Consumer Staples": "Consumer Defensive",
+                "Materials": "Basic Materials"}
+PEER_GROUPS = {
+    # Industrials
+    "Aerospace & Defense": ("Industrials", ["Aerospace & Defense"]),
+    "Machinery & Equipment": ("Industrials", ["Industrial - Machinery", "Industrial Machinery & Supplies & Components",
+        "Construction Machinery & Heavy Transportation Equipment", "Agricultural - Machinery", "Agricultural & Farm Machinery",
+        "Manufacturing - Tools & Accessories", "Industrial - Pollution & Treatment Controls", "Conglomerates", "Industrial Conglomerates"]),
+    "Electrical Equipment": ("Industrials", ["Electrical Components & Equipment", "Electrical Equipment & Parts"]),
+    "Building & Construction": ("Industrials", ["Building Products", "Construction & Engineering", "Construction",
+        "Engineering & Construction", "Residential Construction", "Homebuilding"]),
+    "Transportation": ("Industrials", ["Integrated Freight & Logistics", "Cargo Ground Transportation", "Railroads",
+        "Airlines, Airports & Air Services", "Passenger Airlines", "Trucking", "Marine Transportation", "Air Freight & Logistics",
+        "Passenger Ground Transportation"]),
+    "Commercial & Professional Services": ("Industrials", ["Trading Companies & Distributors", "Industrial - Distribution",
+        "Research & Consulting Services", "Diversified Support Services", "Data Processing & Outsourced Services",
+        "Staffing & Employment Services", "Specialty Business Services", "Consulting Services", "Waste Management",
+        "Rental & Leasing Services", "Environmental & Facilities Services", "Security & Protection Services",
+        "Business Equipment & Supplies", "Human Resource & Employment Services", "Office Services & Supplies", "Security & Alarm Services"]),
+    # Financial Services
+    "Banks": ("Financial Services", ["Regional Banks", "Banks - Regional", "Banks - Diversified",
+        "Commercial & Residential Mortgage Finance", "Mortgage REITs"]),
+    "Insurance": ("Financial Services", ["Insurance - Property & Casualty", "Property & Casualty Insurance", "Insurance - Brokers",
+        "Insurance Brokers", "Insurance - Diversified", "Insurance - Life", "Life & Health Insurance", "Reinsurance",
+        "Insurance - Reinsurance", "Insurance - Specialty", "Multi-line Insurance"]),
+    "Capital Markets & Asset Management": ("Financial Services", ["Asset Management", "Asset Management - Global",
+        "Asset Management & Custody Banks", "Financial - Capital Markets", "Investment Banking & Brokerage",
+        "Investment - Banking & Investment Services", "Financial - Data & Stock Exchanges", "Financial Exchanges & Data",
+        "Multi-Sector Holdings", "Diversified Financial Services"]),
+    "Consumer Finance & Payments": ("Financial Services", ["Financial - Credit Services", "Transaction & Payment Processing Services",
+        "Consumer Finance"]),
+    # Technology
+    "Semiconductors": ("Technology", ["Semiconductors", "Semiconductor Materials & Equipment"]),
+    "Application Software": ("Technology", ["Software - Application", "Application Software", "Electronic Gaming & Multimedia"]),
+    "Infrastructure & Systems Software": ("Technology", ["Software - Infrastructure", "Systems Software", "Internet Services & Infrastructure"]),
+    "Hardware & Components": ("Technology", ["Hardware, Equipment & Parts", "Computer Hardware", "Communication Equipment",
+        "Communications Equipment", "Electronic Manufacturing Services", "Electronic Equipment & Instruments", "Electronic Components",
+        "Consumer Electronics"]),
+    "IT Services & Distributors": ("Technology", ["Information Technology Services", "Technology Distributors", "IT Consulting & Other Services"]),
+    # Consumer Cyclical
+    "Retail": ("Consumer Cyclical", ["Specialty Retail", "Automotive Retail", "Apparel - Retail", "Apparel Retail", "Home Improvement",
+        "Home Improvement Retail", "Specialty Stores", "Other Specialty Retail", "Broadline Retail", "Computer & Electronics Retail",
+        "Homefurnishing Retail", "Auto - Dealerships", "Distributors"]),
+    "Restaurants, Hotels & Leisure": ("Consumer Cyclical", ["Restaurants", "Hotels, Resorts & Cruise Lines", "Travel Services",
+        "Gambling, Resorts & Casinos", "Casinos & Gaming", "Travel Lodging", "Leisure", "Leisure Facilities", "Education Services",
+        "Specialized Consumer Services"]),
+    "Autos & Consumer Durables": ("Consumer Cyclical", ["Automotive Parts & Equipment", "Auto - Parts", "Auto - Manufacturers",
+        "Leisure Products", "Household Appliances", "Home Furnishings", "Motorcycle Manufacturers"]),
+    "Apparel & Luxury": ("Consumer Cyclical", ["Apparel, Accessories & Luxury Goods", "Apparel - Footwear & Accessories", "Footwear",
+        "Apparel - Manufacturers", "Luxury Goods", "Personal Products & Services"]),
+    # Healthcare
+    "Pharma & Biotech": ("Healthcare", ["Biotechnology", "Drug Manufacturers - General", "Drug Manufacturers - Specialty & Generic", "Pharmaceuticals"]),
+    "Medical Devices & Supplies": ("Healthcare", ["Medical - Devices", "Medical - Instruments & Supplies", "Health Care Equipment", "Health Care Supplies"]),
+    "Diagnostics & Life Science Tools": ("Healthcare", ["Medical - Diagnostics & Research", "Life Sciences Tools & Services"]),
+    "Providers & Health Services": ("Healthcare", ["Medical - Healthcare Plans", "Managed Health Care", "Medical - Care Facilities",
+        "Health Care Facilities", "Health Care Services", "Medical - Distribution", "Medical - Healthcare Information Services",
+        "Health Care Technology"]),
+    # Real Estate
+    "Property REITs": ("Real Estate", ["REIT - Retail", "REIT - Residential", "Health Care REITs", "Industrial REITs", "Retail REITs",
+        "Office REITs", "REIT - Healthcare Facilities", "REIT - Industrial", "REIT - Office", "Single-Family Residential REITs",
+        "Real Estate - Services", "REIT - Diversified", "REIT - Hotel & Motel", "Diversified REITs", "Real Estate Services",
+        "Multi-Family Residential REITs", "Hotel & Resort REITs"]),
+    "Specialty REITs": ("Real Estate", ["REIT - Specialty", "Other Specialized REITs", "Timber REITs"]),
+    # Utilities
+    "Regulated Utilities": ("Utilities", ["Regulated Electric", "Gas Utilities", "Multi-Utilities", "Electric Utilities",
+        "Diversified Utilities", "Regulated Gas", "Regulated Water", "Water Utilities"]),
+    "Power Producers & Renewables": ("Utilities", ["Renewable Utilities", "Independent Power Producers",
+        "Independent Power Producers & Energy Traders", "Renewable Electricity", "Solar"]),
+    # Consumer Defensive
+    "Food, Beverage & Tobacco": ("Consumer Defensive", ["Packaged Foods", "Packaged Foods & Meats", "Beverages - Non-Alcoholic",
+        "Soft Drinks & Non-alcoholic Beverages", "Beverages - Wineries & Distilleries", "Food Confectioners", "Tobacco",
+        "Agricultural Farm Products", "Agricultural Products & Services"]),
+    "Household & Personal Products": ("Consumer Defensive", ["Household & Personal Products", "Personal Care Products"]),
+    "Staples Retail & Distribution": ("Consumer Defensive", ["Discount Stores", "Food Retail", "Food Distributors", "Food Distribution",
+        "Grocery Stores", "Consumer Staples Merchandise Retail"]),
+    # Basic Materials
+    "Chemicals": ("Basic Materials", ["Chemicals - Specialty", "Specialty Chemicals", "Diversified Chemicals", "Chemicals",
+        "Agricultural Inputs", "Fertilizers & Agricultural Chemicals"]),
+    "Metals & Mining": ("Basic Materials", ["Steel", "Gold", "Copper", "Silver", "Aluminum", "Diversified Metals & Mining"]),
+    "Construction Materials & Packaging": ("Basic Materials", ["Construction Materials", "Paper & Plastic Packaging Products & Materials",
+        "Metal, Glass & Plastic Containers", "Packaging & Containers"]),
+    # Energy
+    "Upstream & Energy Services": ("Energy", ["Oil & Gas Exploration & Production", "Oil & Gas Integrated", "Oil & Gas Equipment & Services",
+        "Oil & Gas Drilling"]),
+    "Midstream & Refining": ("Energy", ["Oil & Gas Midstream", "Oil & Gas Storage & Transportation", "Oil & Gas Refining & Marketing"]),
+    # Communication Services
+    "Media, Entertainment & Interactive": ("Communication Services", ["Entertainment", "Movies & Entertainment", "Broadcasting",
+        "Interactive Home Entertainment", "Publishing", "Advertising Agencies", "Internet Content & Information"]),
+    "Telecom": ("Communication Services", ["Telecommunications Services"]),
+}
+INDUSTRY_GROUP = {}
+for _g, (_sec, _inds) in PEER_GROUPS.items():
+    for _i in _inds:
+        assert _i not in INDUSTRY_GROUP, f"industry {_i!r} mapped twice"
+        INDUSTRY_GROUP[_i] = (_g, _sec)
+
+
+def classify(sector, industry):
+    """(peer group or None, sector). A mapped industry takes its group's parent
+    sector; an unmapped one keeps its own (aliased) sector and no group."""
+    hit = INDUSTRY_GROUP.get(industry)
+    if hit:
+        return hit
+    return None, SECTOR_ALIAS.get(sector, sector)
+
+
+def taxonomy_report(meta):
+    """Counts per sector and group plus every unmapped industry (which falls back
+    to its sector). Raises if a name resolves to nothing at all."""
+    by_sec, by_grp, unmapped = Counter(), Counter(), Counter()
+    for s, m in meta.items():
+        g, sec = classify(m["sector"], m["industry"])
+        if not sec:
+            raise ValueError(f"{s}: no sector or group")
+        by_sec[sec] += 1
+        if g:
+            by_grp[(sec, g)] += 1
+        else:
+            unmapped[(sec, m["industry"])] += 1
+    return {"sectors": dict(by_sec), "groups": {f"{sec} / {g}": n for (sec, g), n in by_grp.items()},
+            "unmapped": {f"{sec} / {ind}": n for (sec, ind), n in unmapped.items()}}
+
+
+def print_taxonomy_report(meta):
+    r = taxonomy_report(meta)
+    print(f"taxonomy: {len(r['sectors'])} sectors, {len(r['groups'])} groups, {sum(r['unmapped'].values())} names unmapped", file=sys.stderr)
+    for k, n in sorted(r["groups"].items()):
+        print(f"  {n:4d}  {k}", file=sys.stderr)
+    for k, n in sorted(r["unmapped"].items()):
+        print(f"  {n:4d}  {k}  (fallback: sector)", file=sys.stderr)
+
+
+# ---- Residual pullback ------------------------------------------------------
+# For each name: eps_t = r_t - leave-one-out mean of its peers' r_t (peer group if
+# it has >= MIN_PEERS other eligible names in the current pool, else its sector;
+# no benchmark at all if the sector has no other eligible name). Resid21 is the
+# sum of eps over the last PULL_W sessions; sigma is the SD of eps over the
+# PULL_VOL sessions before that; pullback = -Resid21 / (sigma * sqrt(PULL_W)),
+# so +2 is an unusually large stock-specific fall. Names need PULL_W + PULL_VOL
+# daily returns; every input is kept alongside the result for audit.
+PULL_W, PULL_VOL, MIN_PEERS = 21, 126, 5
+
+
+def residual_pullback(returns, meta, include=None):
+    need = PULL_W + PULL_VOL
+    names = [s for s in returns if (include is None or s in include) and returns[s] and len(returns[s]) >= need]
+    tail = {s: returns[s][-need:] for s in names}
+    cls = {s: classify(meta[s]["sector"], meta[s]["industry"]) for s in names}
+    grp = {}
+    sec = {}
+    for s, (g, sc) in cls.items():
+        if g:
+            grp.setdefault(g, []).append(s)
+        sec.setdefault(sc, []).append(s)
+    sums = {}
+    for key, members in [*[("g:" + g, m) for g, m in grp.items()], *[("s:" + sc, m) for sc, m in sec.items()]]:
+        sums[key] = ([sum(tail[s][t] for s in members) for t in range(need)], len(members))
+    out = {}
+    for s in names:
+        g, sc = cls[s]
+        if g and len(grp[g]) - 1 >= MIN_PEERS:
+            key, label = "g:" + g, "group"
+        elif len(sec[sc]) > 1:
+            key, label = "s:" + sc, "sector"
+        else:
+            key, label = None, "none"
+        r = tail[s]
+        if key:
+            tot, n = sums[key]
+            bench = [(tot[t] - r[t]) / (n - 1) for t in range(need)]
+            peers = n - 1
+        else:
+            bench = [0.0] * need
+            peers = 0
+        eps = [r[t] - bench[t] for t in range(need)]
+        hist = eps[:PULL_VOL]
+        sigma = statistics.stdev(hist) if len(hist) > 1 else 0.0
+        resid21 = sum(eps[PULL_VOL:])
+        raw21 = sum(r[PULL_VOL:])
+        pull = -resid21 / (max(sigma, 1e-6) * math.sqrt(PULL_W))
+        out[s] = {"raw21": raw21, "bench21": raw21 - resid21, "resid21": resid21, "sigma": sigma, "pullback": pull,
+                  "benchmark": label, "peer_group": g if label == "group" else sc if label == "sector" else None, "peers": peers}
+    order = sorted(out, key=lambda s: -out[s]["pullback"])
+    for i, s in enumerate(order, 1):
+        out[s]["rank"] = i
+    return out
 
 BASKET_FILE = Path(__file__).parent / "basket.json"
 
@@ -976,9 +1201,9 @@ def render_html(prices, caps, as_of, meta=None, dates=None, intra=None):
 <p class=dnote>Rows and columns follow the dendrogram's optimal leaf order, so neighbours are the most correlated pairs; the tree on the left shows the average-linkage merges (further left = merged at a larger 1−ρ). Colour saturates at the 95th percentile of |ρ| off the diagonal. Tap a cell for ρ, a ticker for its chart.</p>
 <div id=bksec hidden><div class="labh labsec"><h2>Basket</h2><p id=bksub></p></div>
 <div class=bkrow><span class=lbl>Size</span><div class=seg role=group aria-label="Tile size"><button data-bsize=w>Weight</button><button data-bsize=r>Risk</button></div></div>
-<div class=bkrow><span class=lbl>Colour</span><div class="seg segsm" role=group aria-label="Tile colour"><button data-bcol=score>Score</button><button data-bcol=drank>&Delta;Rank</button><button data-bcol=corr>Corr</button><button data-bcol=risk>Risk%</button></div></div>
+<div class=bkrow><span class=lbl>Colour</span><div class="seg segsm" role=group aria-label="Tile colour"><button data-bcol=score>Score</button><button data-bcol=drank>&Delta;Rank</button><button data-bcol=resid>Resid</button><button data-bcol=corr>Corr</button><button data-bcol=risk>Risk%</button></div></div>
 <div class=tm id=tm></div><div id=tmtip></div><p class=dnote id=tmsub style="margin-top:6px"></p>
-<p class=dnote>Tap a tile for details, double-tap for its chart. Size: Risk sizes tiles by weight × volatility, so a volatile name takes a bigger share of the basket's risk than its weight suggests. Colour: Score is the ranking score; ΔRank is the rank change over the last 21 sessions under the same settings (is it still working?); Corr is how much a name moves with the rest of the basket (red = the same bet held again); Risk% is its share of basket variance against its weight.</p>
+<p class=dnote>Tap a tile for details, double-tap for its chart. Size: Risk sizes tiles by weight × volatility, so a volatile name takes a bigger share of the basket's risk than its weight suggests. Colour: Score is the ranking score; ΔRank is the rank change over the last 21 sessions under the same settings (is it still working?); Resid is the industry-neutral, volatility-scaled 21-session residual return, red = a stock-specific pullback against its peer group; Corr is how much a name moves with the rest of the basket (red = the same bet held again); Risk% is its share of basket variance against its weight.</p>
 <table id=bk></table>
 <p class=dnote>Weights are shares of the basket. Rank is the name's position in the current ranking (— if it is in the data but filtered out by Index/Universe, n/a if it is outside both indexes). Tap a ticker for its chart.</p></div></section>
 </main>
@@ -1021,6 +1246,7 @@ def main():
     ap.add_argument("--z", action="store_true", help="show cross-sectional z-scores (blend z-scores each window first)")
     ap.add_argument("--html", metavar="PATH", help="also write the ranking as a static HTML page (+ data.json)")
     ap.add_argument("--no-intraday", action="store_true", help="skip the per-ticker intraday bars in --html")
+    ap.add_argument("--pullback", action="store_true", help="also print the residual pullback table (industry-neutral, vol-scaled 21D)")
     args = ap.parse_args()
     if not os.environ.get("FMP_API_KEY"):
         sys.exit("FMP_API_KEY is not set")
@@ -1034,6 +1260,12 @@ def main():
     print(f"{'Rank':>4}  {'Ticker':<6}  {'score':>10}")
     for i, (s, r) in enumerate(ranked, 1):
         print(f"{i:>4}  {s:<6}  {r:>10.4f}")
+    if args.pullback:
+        pb = residual_pullback(returns, meta, include)
+        print(f"\n{'Rank':>4}  {'Ticker':<6}  {'pullback':>8}  {'raw21':>7}  {'bench21':>7}  {'resid21':>7}  {'sigma':>6}  benchmark")
+        for s in sorted(pb, key=lambda s: pb[s]["rank"]):
+            v = pb[s]
+            print(f"{v['rank']:>4}  {s:<6}  {v['pullback']:>8.2f}  {v['raw21']:>7.3f}  {v['bench21']:>7.3f}  {v['resid21']:>7.3f}  {v['sigma']:>6.4f}  {v['benchmark']}:{v['peer_group']} ({v['peers']})")
     if args.html:
         as_of = datetime.now(NY).strftime("%b %-d, %Y %-I:%M %p %Z")
         intra = {} if args.no_intraday else load_intraday_all(list(prices))

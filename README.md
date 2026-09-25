@@ -36,6 +36,12 @@ US market hours and daily after close (the ↻ button pulls the newest build in 
 
 An optional `basket.json` next to the script (`{"asOf": "...", "rows": [[ticker, weight%], ...]}`) is shown on the Lab tab with each name's current rank; it holds tickers and weights only. The names with data are also drawn as a treemap: tile size is the weight share or the risk share (weight × trailing‑1Y daily σ); tile colour is the score, the rank change over the last 21 sessions, the mean correlation with the rest of the basket (relative to the basket average), or the share of basket variance the name contributes against its weight. Published series carry 21 extra sessions (`LAG`) so the page can re-rank as of 21 sessions ago.
 
+### Peer groups and residual pullback
+
+`SECTOR_ALIAS` folds the GICS sector names used by the S&P 400 list into FMP's, giving 11 sectors. `PEER_GROUPS` is a static map from every FMP/GICS industry string to one of 37 peer groups, each with a fixed parent sector (a few industries are re-parented: homebuilders and A&D to Industrials, packaging to Basic Materials, solar to Utilities). An unmapped industry falls back to its sector and is listed by `taxonomy_report()`, which the build prints to stderr. The page carries each name's sector and group.
+
+`residual_pullback()` (mirrored in the page; `--pullback` prints it) computes, per name in the current pool with at least 147 daily returns: ε_t = r_t − leave-one-out mean of its peer group's daily log returns (the group needs ≥ 5 other eligible names in the pool, else the sector; no benchmark if the sector has no other name); Resid21 = Σ ε over the last 21 sessions; σ = SD(ε) over the 126 sessions before that; pullback = −Resid21 / (σ√21). +2 is an unusually large stock-specific fall, −2 an unusually strong relative run-up. Raw and benchmark 21-session returns, σ, the benchmark used and the cross-sectional rank are kept alongside the result. The treemap's Resid colour is the negative of the pullback (green = beat peers) saturating at ±2.
+
 ## Data (written to `data/`, git-ignored)
 
 - `universe.json` — S&P 500 constituents (`/stable/sp500-constituent`) ranked by market cap from `/stable/batch-quote`, top N kept
