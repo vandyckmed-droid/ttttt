@@ -255,6 +255,14 @@ th:last-child,td:last-child,.num{text-align:right}
 .sortb{border:0;background:none;color:inherit;font:inherit;padding:0;cursor:pointer;display:inline-flex;align-items:center;gap:6px;
   -webkit-user-select:none;user-select:none;-webkit-touch-callout:none;touch-action:manipulation}
 .sortb.held{opacity:.5}
+#tday,#colth{position:relative}
+.menu{position:absolute;right:8px;top:calc(100% + 6px);z-index:5;min-width:9em;background:var(--sheet);border:1px solid var(--line);border-radius:12px;
+  padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.18);text-align:left;font-weight:400}
+.menu button{display:flex;justify-content:space-between;align-items:center;gap:12px;width:100%;border:0;background:none;color:var(--fg);font:inherit;
+  font-size:15px;padding:9px 12px;border-radius:8px;cursor:pointer;text-align:left}
+.menu button[aria-checked=true]{background:var(--chip);font-weight:500}
+.menu button[aria-checked=true]::after{content:"\\2713";color:var(--pos)}
+.menu button:focus-visible{outline:2px solid var(--pos)}
 .sortb svg path{fill:currentColor;opacity:.35}.sortb[data-dir=desc] .dn,.sortb[data-dir=asc] .up{opacity:1}
 .mv{display:inline-block;overflow:hidden;white-space:nowrap;vertical-align:bottom;font-size:13px;font-weight:600;
   max-width:5em;margin-right:8px;animation:mv 4.5s ease forwards}
@@ -333,7 +341,7 @@ function apply(){
   // Display: Raw value, Z-score (a blend z-scores each window first, as rank()
   // with zscore=True), percentile (100% = top) or rank position.
   const Z=S.disp==="z";
-  document.querySelectorAll("[data-disp]").forEach(x=>x.setAttribute("aria-pressed",x.dataset.disp===S.disp));
+  document.querySelectorAll("[data-disp]").forEach(x=>x.setAttribute("aria-checked",x.dataset.disp===S.disp));
   $("sum").textContent=[pool.length,wins.map(w=>parseInt(w)).join("/"),...(vol?["VOL"]:[]),...(S.r2?["R\\u00b2"]:[]),...(skip?["S"+SKIP]:[]),
     ...({z:["Z"],pct:["%"],rank:["RANK"]}[S.disp]||[])].join(" \\u2022 ");
   document.querySelectorAll("[data-today]").forEach(x=>x.setAttribute("aria-pressed",String(x.dataset.today==="1")===String(S.today)));
@@ -381,17 +389,23 @@ document.querySelectorAll("[data-win]").forEach(x=>x.onclick=()=>{const w=x.data
   if(S.wins.has(w)){if(S.wins.size>1)S.wins.delete(w)}else S.wins.add(w);save();apply()});
 document.querySelectorAll("[data-theme-opt]").forEach(x=>x.onclick=()=>{S.theme=x.dataset.themeOpt;save();apply()});
 document.querySelectorAll("[data-today]").forEach(x=>x.onclick=()=>{S.today=x.dataset.today==="1";save();apply()});
-// Today header: tap cycles the sort (desc, asc, off); long-press (500 ms)
-// switches between today's change and the 5-day log return without sorting.
-{const btn=$("sortday");let timer=null,longPressed=false;
+// Header buttons: a long press (500 ms) fires onLong and suppresses the
+// following click; a plain tap fires onTap.
+function longPress(btn,onLong,onTap){let timer=null,longPressed=false;
   const cancel=()=>{clearTimeout(timer);timer=null;btn.classList.remove("held")};
   btn.addEventListener("pointerdown",()=>{longPressed=false;btn.classList.add("held");
-    timer=setTimeout(()=>{longPressed=true;cancel();S.dmode=S.dmode==="d5"?"d1":"d5";save();apply();
-      if(navigator.vibrate)navigator.vibrate(10)},500)});
+    timer=setTimeout(()=>{longPressed=true;cancel();onLong();if(navigator.vibrate)navigator.vibrate(10)},500)});
   ["pointerup","pointerleave","pointercancel"].forEach(ev=>btn.addEventListener(ev,cancel));
   btn.addEventListener("contextmenu",e=>e.preventDefault());
-  btn.onclick=e=>{if(longPressed){longPressed=false;e.preventDefault();return}S.sort={"":"desc",desc:"asc",asc:""}[S.sort];apply()};}
-document.querySelectorAll("[data-disp]").forEach(x=>x.onclick=()=>{S.disp=x.dataset.disp;save();apply()});
+  btn.onclick=e=>{if(longPressed){longPressed=false;e.preventDefault();return}if(onTap)onTap()};}
+// Today: tap cycles the sort (desc, asc, off); long-press switches today's
+// change <-> 5-day log return without sorting.
+longPress($("sortday"),()=>{S.dmode=S.dmode==="d5"?"d1":"d5";save();apply()},()=>{S.sort={"":"desc",desc:"asc",asc:""}[S.sort];apply()});
+// Value column: long-press opens the display menu (Raw / Z / % / Rank).
+const menuOpen=o=>{$("dispmenu").hidden=!o;$("colbtn").setAttribute("aria-expanded",o)};
+longPress($("colbtn"),()=>menuOpen($("dispmenu").hidden));
+document.addEventListener("pointerdown",e=>{if(!$("colth").contains(e.target))menuOpen(false)});
+document.querySelectorAll("[data-disp]").forEach(x=>x.onclick=()=>{S.disp=x.dataset.disp;save();apply();menuOpen(false)});
 document.querySelectorAll("[data-r2]").forEach(x=>x.onclick=()=>{S.r2=x.dataset.r2==="1";save();apply()});
 document.querySelectorAll("[data-vol]").forEach(x=>x.onclick=()=>{S.vol=x.dataset.vol==="1";save();apply()});
 document.querySelectorAll("[data-skip]").forEach(x=>x.onclick=()=>{S.skip=x.dataset.skip==="1";save();apply()});
@@ -400,7 +414,7 @@ const setOpen=o=>{b.classList.toggle("open",o);$("gear").setAttribute("aria-expa
   if(o)document.documentElement.style.setProperty("--sheet-h",$("sheet").offsetHeight+"px")};
 const close=()=>setOpen(false);
 $("gear").onclick=()=>setOpen(!b.classList.contains("open"));$("close").onclick=close;
-document.onkeydown=e=>{if(e.key==="Escape")close()};
+document.onkeydown=e=>{if(e.key==="Escape"){close();menuOpen(false)}};
 """
 
 
@@ -416,7 +430,9 @@ def render_html(prices, caps, as_of):
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>Return Ranker</title><style>{CSS}</style></head><body><main>
 <header><div><h1>Return Ranker</h1><p class=sum id=sum></p></div><button class=gear id=gear aria-label=Settings aria-expanded=false aria-controls=sheet>{GEAR}</button></header>
-<table id=tbl><thead><tr><th>Ticker</th><th id=col class=num>Ann. Log Return</th>
+<table id=tbl><thead><tr><th>Ticker</th><th id=colth class=num><button class=sortb id=colbtn aria-haspopup=menu aria-expanded=false aria-controls=dispmenu
+ title="Long-press to change display"><span id=col>Ann. Log Return</span></button>
+<div class=menu id=dispmenu role=menu aria-label=Display hidden><button role=menuitemradio data-disp=raw>Raw</button><button role=menuitemradio data-disp=z>Z-score</button><button role=menuitemradio data-disp=pct>Percentile</button><button role=menuitemradio data-disp=rank>Rank</button></div></th>
 <th id=tday class=num hidden><button class=sortb id=sortday data-dir="" aria-label="Sort by today's change" title="Tap to sort, long-press for 5-day"><span id=daylbl>Today</span>{SORT}</button></th></tr></thead><tbody id=rows></tbody></table>
 <p class=asof>As of {as_of}</p></main>
 <section class=sheet id=sheet role=region aria-label=Settings>
@@ -427,7 +443,6 @@ def render_html(prices, caps, as_of):
 <div><p class=lbl>Skip</p><div class=seg role=group aria-label=Skip><button data-skip=0>None</button><button data-skip=1>{SKIP}</button></div></div>
 <div><p class=lbl>Volatility</p><div class=seg role=group aria-label=Volatility><button data-vol=0>Off</button><button data-vol=1>On</button></div></div>
 <div><p class=lbl>&times; R&sup2;</p><div class=seg role=group aria-label="Multiply by R squared"><button data-r2=0>Off</button><button data-r2=1>On</button></div></div>
-<div class=full><p class=lbl>Display</p><div class=seg role=group aria-label=Display><button data-disp=raw>Raw</button><button data-disp=z>Z</button><button data-disp=pct>%</button><button data-disp=rank>Rank</button></div></div>
 <div><p class=lbl>Today</p><div class=seg role=group aria-label="Today's change"><button data-today=0>Off</button><button data-today=1>On</button></div></div>
 <div><p class=lbl>Appearance</p><div class=seg role=group aria-label=Appearance><button data-theme-opt=auto>Auto</button><button data-theme-opt=light>Light</button><button data-theme-opt=dark>Dark</button></div></div>
 </div>
