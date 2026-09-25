@@ -29,7 +29,7 @@ Python 3.9+, stdlib only. Output: Rank, Ticker, 12m log return.
 ## Web page
 
 https://vandyckmed-droid.github.io/ttttt/ — rebuilt by `.github/workflows/refresh.yml` every 15 min during
-US market hours and daily after close (the ↻ button pulls the newest build in place). Requires the repo secret `FMP_API_KEY`. Daily closes are fetched once per New York day (cached in
+US market hours and daily after close (the ↻ button pulls the newest build in place). Paste your own FMP key under Settings → Live quotes and ↻ also overlays live quotes for all tickers and live 5-minute bars for the open chart; the key is kept only in that browser's localStorage, never in the page or repo. Requires the repo secret `FMP_API_KEY`. Daily closes are fetched once per New York day (cached in
 `data/history`, and by `actions/cache` in the workflow); intraday runs only fetch batch quotes.
 
 ## Data (written to `data/`, git-ignored)

@@ -389,6 +389,11 @@ tbody tr[data-t]{cursor:pointer}tbody tr[data-t]:active td{background:var(--chip
 .x{width:30px;height:30px;border:0;border-radius:50%;background:var(--chip);color:var(--fg);font-size:14px;line-height:1;cursor:pointer}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 10px}
 .grid .full{grid-column:1/-1}
+.keyrow{display:flex;gap:6px}
+.keyrow input{flex:1;min-width:0;border:0;border-radius:10px;background:var(--chip);color:var(--fg);font:inherit;font-size:14px;padding:7px 10px}
+.keyrow button{border:0;border-radius:10px;background:var(--chip);color:var(--fg);font:inherit;font-size:14px;padding:7px 12px;cursor:pointer}
+.keyrow button.pri{background:var(--sel);box-shadow:var(--shadow)}
+.keyst{font-size:12px;color:var(--muted);margin:4px 0 0;min-height:1em}.keyst.ok{color:var(--pos)}.keyst.err{color:var(--neg)}
 .lbl{color:var(--muted);font-size:12px;letter-spacing:.03em;margin:0 0 4px}
 .seg{display:grid;grid-auto-columns:1fr;grid-auto-flow:column;background:var(--chip);border-radius:10px;padding:2px;gap:2px}
 .seg button{border:0;background:none;color:var(--muted);font:inherit;font-size:14px;padding:6px 0;border-radius:8px;cursor:pointer}
@@ -556,18 +561,54 @@ document.onkeydown=e=>{if(e.key==="Escape"){if(b.classList.contains("dopen"))clo
 // Refresh: pull the latest published data.json (the GitHub Action rebuilds it
 // every few minutes during market hours) and re-rank in place; rows that moved
 // get the usual ▲/▼ badges.
+// ---- Live quotes with a personal FMP key. The key lives only in this
+// browser's localStorage (never in the page or the repo); without one, refresh
+// just pulls the latest published build.
+const FMP="https://financialmodelingprep.com/stable/";
+const getKey=()=>store.get("fmpKey","");
+const nyDate=ts=>new Intl.DateTimeFormat("en-CA",{timeZone:"America/New_York",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date(ts*1000));
+const nyNow=()=>new Date().toLocaleString("en-US",{timeZone:"America/New_York",month:"short",day:"numeric",year:"numeric",hour:"numeric",minute:"2-digit",timeZoneName:"short"}).replace(/,(?=[^,]*$)/,"");
+async function fmp(path,params){const u=new URL(FMP+path);for(const k in params)u.searchParams.set(k,params[k]);u.searchParams.set("apikey",getKey());
+  const r=await fetch(u);if(r.status===401||r.status===403)throw new Error("FMP rejected the key");if(!r.ok)throw new Error("FMP "+r.status);return r.json()}
+// Overlay live quotes on the payload, the same way price_series() does: a quote
+// from a newer session is appended, one from the latest session replaces it.
+async function liveQuotes(P){const syms=P.data.map(x=>x[0]),q={};
+  for(let i=0;i<syms.length;i+=100)for(const x of await fmp("batch-quote",{symbols:syms.slice(i,i+100).join(",")}))q[x.symbol]=x;
+  const last=P.dates[P.dates.length-1];let newDay=null;
+  for(const x of Object.values(q)){const d=nyDate(x.timestamp);if(d>last&&(!newDay||d>newDay))newDay=d}
+  if(newDay){P.dates.push(newDay);for(const row of P.data)row[2].push(row[2][row[2].length-1])}
+  for(const row of P.data){const x=q[row[0]];if(!x||!(x.price>0))continue;const d=nyDate(x.timestamp),p=row[2];
+    if(d===P.dates[P.dates.length-1])p[p.length-1]=x.price}
+  P.asOf=nyNow()+" · live";return Object.keys(q).length}
+async function liveIntraday(t){const today=nyDate(Date.now()/1000),from=new Date(Date.now()-6*864e5).toISOString().slice(0,10);
+  const rows=await fmp("historical-chart/5min",{symbol:t,from,to:today});if(!rows.length)return null;
+  const day=rows.reduce((m,r)=>r.date.slice(0,10)>m?r.date.slice(0,10):m,"");const bars={};
+  for(const r of rows){if(r.date.slice(0,10)!==day)continue;const i=Math.floor((+r.date.slice(11,13)*60+ +r.date.slice(14,16)-570)/5);if(i>=0&&i<BARS)bars[i]=r.close}
+  const ks=Object.keys(bars).map(Number);if(!ks.length)return null;const lo=Math.min(...ks),hi=Math.max(...ks);
+  return[day,lo,Array.from({length:hi-lo+1},(_,j)=>bars[lo+j]??null)]}
 $("refresh").onclick=async()=>{const btn=$("refresh");if(btn.classList.contains("busy"))return;
   btn.classList.add("busy");btn.classList.remove("ok","err");
-  try{const r=await fetch("data.json?_="+Date.now(),{cache:"no-store"});if(!r.ok)throw new Error(r.status);
-    const P=await r.json();const same=P.asOf===PAYLOAD.asOf;setPayload(P);apply();if(cur)showDetail(cur,true);
-    btn.classList.add("ok");btn.title=same?"Already up to date ("+P.asOf+")":"Updated "+P.asOf}
-  catch(e){btn.classList.add("err");btn.title="Refresh failed: "+e.message}
+  try{let P=PAYLOAD;try{const r=await fetch("data.json?_="+Date.now(),{cache:"no-store"});if(r.ok){const Q=await r.json();if(Q.asOf!==PAYLOAD.asOf.replace(" · live",""))P=Q}}catch(e){}
+    let msg="Updated "+P.asOf;
+    if(getKey()){P=JSON.parse(JSON.stringify(P));const n=await liveQuotes(P);msg=`Live quotes for ${n} tickers · ${P.asOf}`;
+      if(cur){const it=await liveIntraday(cur).catch(()=>null);if(it)P.intra[cur]=it}}
+    else if(P===PAYLOAD)msg="Already up to date ("+P.asOf+") — add an FMP key in Settings for live quotes";
+    setPayload(P);apply();if(cur)showDetail(cur,true);btn.classList.add("ok");btn.title=msg}
+  catch(e){btn.classList.add("err");btn.title="Refresh failed: "+e.message;$("keyst").textContent=e.message;$("keyst").className="keyst err"}
   finally{btn.classList.remove("busy");setTimeout(()=>btn.classList.remove("ok","err"),1500)}};
+// Key entry (Settings). Save tests the key with one quote call.
+const keyStatus=(m,c)=>{$("keyst").textContent=m;$("keyst").className="keyst "+(c||"")};
+const showKeyState=()=>{const k=getKey();$("fmpkey").value="";$("fmpkey").placeholder=k?"Key saved ("+k.slice(0,4)+"…)":"Paste FMP API key";keyStatus(k?"Live quotes on. Stored only in this browser.":"Optional: refresh pulls live FMP quotes with your key.")};
+$("keysave").onclick=async()=>{const k=$("fmpkey").value.trim();if(!k){keyStatus("Enter a key first.","err");return}
+  store.set("fmpKey",k);keyStatus("Checking…");try{await fmp("quote",{symbol:"AAPL"});showKeyState();keyStatus("Key works. Live quotes on. Stored only in this browser.","ok")}
+  catch(e){store.set("fmpKey","");showKeyState();keyStatus(e.message,"err")}};
+$("keyclear").onclick=()=>{store.set("fmpKey","");showKeyState();keyStatus("Key removed.")};
+showKeyState();
 
 // Per-ticker view: tap a row. Horizons: 1D = today's 5-minute bars vs the prior
 // close; the rest are daily closes vs the first close in the window.
 const HZ={"1D":0,"1W":5,"1M":21,"3M":63,"6M":126,"1Y":252};
-let cur=null,hz=store.get("hz","1D");if(!(hz in HZ))hz="1D";
+let cur=null,liveIntraCache={},hz=store.get("hz","1D");if(!(hz in HZ))hz="1D";
 const money=v=>v>=1000?v.toLocaleString(undefined,{maximumFractionDigits:2}):v.toFixed(2);
 const pct=v=>(v>=0?"+":"−")+Math.abs(v*100).toFixed(2)+"%";
 const sgnMoney=v=>(v>=0?"+":"−")+money(Math.abs(v));
@@ -606,7 +647,9 @@ function drawChart(t){
     const c=hov.querySelector("circle");c.setAttribute("cx",x);c.setAttribute("cy",y);
     tip.hidden=false;tip.innerHTML=`${sr.xs[i]} <b>${money(sr.ys[i])}</b>`;tip.style.left=Math.max(50,Math.min(W-50,x))/W*100+"%"};
   svg.onpointermove=move;svg.onpointerdown=move;svg.onpointerleave=()=>{hov.hidden=true;tip.hidden=true}}
-function showDetail(t,keep){cur=t;const p=PX[t],m=META[t]||["","",""],L=p.length,d1=p[L-1]-p[L-2];
+function showDetail(t,keep){cur=t;
+  if(getKey()&&!keep&&!(liveIntraCache[t]>Date.now()-6e4)){liveIntraCache[t]=Date.now();
+    liveIntraday(t).then(it=>{if(it){INTRA[t]=it;if(cur===t)drawChart(t)}}).catch(()=>{})}const p=PX[t],m=META[t]||["","",""],L=p.length,d1=p[L-1]-p[L-2];
   $("dtick").textContent=t;$("dname").textContent=m[0];$("dsec").textContent=[m[1],m[2]].filter(Boolean).join(" · ");
   $("dprice").textContent=money(p[L-1]);const c=$("dchg");c.textContent=`${sgnMoney(d1)} (${pct(d1/p[L-2])}) today`;c.style.color=d1>=0?"var(--pos)":"var(--neg)";
   const lr=lastRank[t];$("drank").textContent=lr?`Rank #${lr[0]+1} of ${Object.keys(lastRank).length} · ${lr[1]} · ${$("sum").textContent}`:"Not in the current universe";
@@ -673,6 +716,7 @@ def render_html(prices, caps, as_of, meta=None, dates=None, intra=None):
 <div><p class=lbl>&times; R&sup2;</p><div class=seg role=group aria-label="Multiply by R squared"><button data-r2=0>Off</button><button data-r2=1>On</button></div></div>
 <div><p class=lbl>Today</p><div class=seg role=group aria-label="Today's change"><button data-today=0>Off</button><button data-today=1>On</button></div></div>
 <div><p class=lbl>Appearance</p><div class=seg role=group aria-label=Appearance><button data-theme-opt=auto>Auto</button><button data-theme-opt=light>Light</button><button data-theme-opt=dark>Dark</button></div></div>
+<div class=full><p class=lbl>Live quotes (FMP key)</p><div class=keyrow><input id=fmpkey type=password autocomplete=off spellcheck=false aria-label="FMP API key"><button class=pri id=keysave>Save</button><button id=keyclear>Clear</button></div><p class=keyst id=keyst></p></div>
 </div>
 </section>
 <script>{consts}{JS}</script></body></html>"""
