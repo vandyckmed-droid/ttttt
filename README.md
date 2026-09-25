@@ -1,6 +1,6 @@
 # ttttt
 
-Minimal prototype: rank the ~100 largest S&P 500 stocks by raw 12-month log return.
+Rank S&P 500 stocks (any market-cap rank range) by annualized log return.
 
     R_12m = ln(P_now / P_252)
 
@@ -9,7 +9,7 @@ Minimal prototype: rank the ~100 largest S&P 500 stocks by raw 12-month log retu
 
 ## Run
 
-    FMP_API_KEY=... python3 momentum.py [--top 100]
+    FMP_API_KEY=... python3 momentum.py [--range 1-100]
 
 Python 3.9+, stdlib only. Output: Rank, Ticker, 12m log return.
 
@@ -18,12 +18,14 @@ Python 3.9+, stdlib only. Output: Rank, Ticker, 12m log return.
 - `--window blend --w6 0.5` blends the two annualized scores: w6·score₆ₘ + (1 − w6)·score₁₂ₘ.
 - `--vol` divides by the annualized sample std dev (× √252) of the same daily log returns (Settings toggle on the page).
 - `--skip` excludes the most recent 21 sessions and annualizes the 231-day window: ln(P_21 / P_252) × 252/231. On the web page this is the Settings toggle.
-- `--html PATH` writes the page. It embeds each ticker's daily log returns and scores/ranks in the browser, so the Settings toggles re-rank instantly.
+- `--range 1-100` picks market-cap ranks to rank (1 = largest); on the page this is the Universe slider.
+- `--html PATH` writes the page. It embeds each ticker's recent prices for all ~500 constituents and scores/ranks in the browser, so the Settings toggles re-rank instantly.
 
 ## Web page
 
 https://vandyckmed-droid.github.io/ttttt/ — rebuilt by `.github/workflows/refresh.yml` every 15 min during
-US market hours and daily after close. Requires the repo secret `FMP_API_KEY`.
+US market hours and daily after close. Requires the repo secret `FMP_API_KEY`. Daily closes are fetched once per New York day (cached in
+`data/history`, and by `actions/cache` in the workflow); intraday runs only fetch batch quotes.
 
 ## Data (written to `data/`, git-ignored)
 

@@ -23,6 +23,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Today's date (New York)
+        id: day
+        run: echo "date=$(TZ=America/New_York date +%F)" >> "$GITHUB_OUTPUT"
+      # Daily closes are fetched once per day and reused by the intraday runs.
+      - uses: actions/cache@v4
+        with:
+          path: data/history
+          key: history-${{ steps.day.outputs.date }}
       - name: Build page
         env:
           FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
