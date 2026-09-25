@@ -34,6 +34,8 @@ https://vandyckmed-droid.github.io/ttttt/ — rebuilt by `.github/workflows/refr
 US market hours and daily after close (the ↻ button pulls the newest build in place). Paste your own FMP key under Settings → Live quotes and ↻ also overlays live quotes for all tickers and live 5-minute bars for the open chart; the key is kept only in that browser's localStorage, never in the page or repo. Requires the repo secret `FMP_API_KEY`. Daily closes are fetched once per New York day (cached in
 `data/history`, and by `actions/cache` in the workflow); intraday runs only fetch batch quotes.
 
+An optional `basket.json` next to the script (`{"asOf": "...", "rows": [[ticker, weight%], ...]}`) is shown on the Lab tab with each name's current rank; it holds tickers and weights only.
+
 ## Data (written to `data/`, git-ignored)
 
 - `universe.json` — S&P 500 constituents (`/stable/sp500-constituent`) ranked by market cap from `/stable/batch-quote`, top N kept
