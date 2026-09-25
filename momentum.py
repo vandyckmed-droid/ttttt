@@ -551,9 +551,9 @@ const save=()=>{store.set("theme",S.theme);store.set("idx",[...S.idx].join(","))
 // temporary ▲n / ▼n next to the ticker (CSS fades them out).
 let prevRank=null,lastRank={},labNames=[],lastScoreOf=null,lastPoolRaw=[];
 let bsize=store.get("bsize","w")==="r"?"r":"w";  // basket treemap tile size: weight, or risk share w·σ
-// basket treemap tile colour: score, rank change / score change over LAG sessions, 21D VolAdj return,
-// mean correlation with the rest of the basket, or risk contribution vs weight
-const BCOL={score:"Score",drank:"\\u0394Rank",dscore:"\\u0394Score",ret:"21D",corr:"Corr",risk:"Risk%"},LAG=21,CORRW=126;
+// basket treemap tile colour: score, rank change over LAG sessions, mean correlation with the
+// rest of the basket, or risk contribution vs weight
+const BCOL={score:"Score",drank:"\\u0394Rank",corr:"Corr",risk:"Risk%"},LAG=21,CORRW=126;
 let bcol=store.get("bcol","score");if(!(bcol in BCOL))bcol="score";
 let lastPool=[],applyN=0,lagCache=null;
 const CW={"1M":21,"3M":63,"6M":126,"1Y":252};let cw=store.get("cw","3M");if(!(cw in CW))cw="3M";let lastCorr=null;
@@ -705,8 +705,8 @@ function renderTreemap(rows){const box=$("tm");if(!box)return;const W=box.client
   // Other modes: a signed value per name, green positive / red negative, saturating at vmax
   const colv=(v,vmax)=>v===null?"var(--chip)":`color-mix(in oklab,var(${v>=0?"--pos":"--neg"}) ${Math.round(Math.min(1,Math.abs(v)/vmax)*100)}%,var(--chip))`;
   const rets=t=>{const p=PX[t];return p.slice(1).map((v,i)=>Math.log(v/p[i]))};
-  // ΔRank / ΔScore: the same scoring on the pool as it stood LAG sessions ago (cached per apply()).
-  if((bcol==="drank"||bcol==="dscore")&&(!lagCache||lagCache.n!==applyN)){const now=[],lag=[];
+  // ΔRank: the same scoring on the pool as it stood LAG sessions ago (cached per apply()).
+  if(bcol==="drank"&&(!lagCache||lagCache.n!==applyN)){const now=[],lag=[];
     for(const [t,,r] of lastPool){const a=lastScoreOf(r),b=lastScoreOf(r.slice(0,r.length-LAG));if(a!==null)now.push([t,a]);if(b!==null)lag.push([t,b])}
     const rk=arr=>{const o={};arr.sort((x,y)=>y[1]-x[1]).forEach(([t,v],i)=>o[t]=[i,v]);return o};lagCache={n:applyN,now:rk(now),lag:rk(lag)}}
   // Corr / Risk%: daily log returns of these names over the trailing CORRW sessions (aligned on the latest close)
@@ -715,15 +715,11 @@ function renderTreemap(rows){const box=$("tm");if(!box)return;const W=box.client
   let desc,vmax=1,fmtv=v=>v.toFixed(2);
   for(const i of items){const lg=lagCache&&lagCache.lag[i.t],nw=lagCache&&lagCache.now[i.t];i.v=null;i.lbl="";
     if(bcol==="drank"){if(lg&&nw){i.v=lg[0]-nw[0];i.lbl=`rank ${nw[0]+1} (was ${lg[0]+1})`}}
-    else if(bcol==="dscore"){if(lg&&nw){i.v=nw[1]-lg[1];i.lbl=`score ${nw[1].toFixed(2)} (was ${lg[1].toFixed(2)})`}}
-    else if(bcol==="ret"){const v=volAdj(rets(i.t).slice(-LAG));i.v=v;i.lbl=v===null?"":`21D VolAdj ${(v>=0?"+":"−")+Math.abs(v).toFixed(2)}`}
     else if(bcol==="corr"){const a=items.indexOf(i);let s=0;for(let b=0;b<items.length;b++)if(b!==a)s+=cov[a][b]/Math.sqrt(cov[a][a]*cov[b][b]);
       const rho=items.length>1?s/(items.length-1):0;i.rho=rho;i.lbl=`mean ρ with the others ${rho.toFixed(2)}`}
     else if(bcol==="risk"){const a=items.indexOf(i),w=items.map(x=>x.wshare);let pv=0,mc=0;for(let b=0;b<items.length;b++){mc+=w[b]*cov[a][b];for(let c=0;c<items.length;c++)pv+=w[b]*w[c]*cov[b][c]}
       const rc=pv?w[a]*mc/pv:w[a];i.rc=rc;i.v=-Math.log(Math.max(1e-6,rc/w[a]));i.lbl=`risk contribution ${(100*rc).toFixed(1)}% vs weight ${(100*w[a]).toFixed(1)}%`}}
   if(bcol==="drank"){vmax=Math.max(1,...items.map(i=>i.v===null?0:Math.abs(i.v)));desc=`rank change over the last ${LAG} sessions under the current settings (green = moved up, saturates at ±${vmax})`}
-  else if(bcol==="dscore"){vmax=Math.max(1e-9,...items.map(i=>i.v===null?0:Math.abs(i.v)));desc=`score change over the last ${LAG} sessions (green = improving, saturates at ±${vmax.toFixed(2)})`}
-  else if(bcol==="ret"){vmax=Math.max(1e-9,...items.map(i=>i.v===null?0:Math.abs(i.v)));desc=`21D vol-adjusted return Σr/(σ√N) (saturates at ±${vmax.toFixed(2)})`}
   else if(bcol==="corr"){const mr=items.reduce((a,i)=>a+i.rho,0)/items.length;for(const i of items)i.v=mr-i.rho;vmax=Math.max(1e-9,...items.map(i=>Math.abs(i.v)));
     desc=`mean correlation of daily returns with the other basket names over the trailing ${CORRW} sessions, against the basket average ρ̄ = ${mr.toFixed(2)} (red = more correlated than average, the same bet held again; saturates at ±${vmax.toFixed(2)})`}
   else if(bcol==="risk"){vmax=Math.log(2);desc=`share of basket variance explained (w·Σw), relative to weight: red contributes more risk than its weight, green less (saturates at 2× / ½×)`}
@@ -978,9 +974,9 @@ def render_html(prices, caps, as_of, meta=None, dates=None, intra=None):
 <p class=dnote>Rows and columns follow the dendrogram's optimal leaf order, so neighbours are the most correlated pairs; the tree on the left shows the average-linkage merges (further left = merged at a larger 1−ρ). Colour saturates at the 95th percentile of |ρ| off the diagonal. Tap a cell for ρ, a ticker for its chart.</p>
 <div id=bksec hidden><div class="labh labsec"><h2>Basket</h2><p id=bksub></p></div>
 <div class=bkrow><span class=lbl>Size</span><div class=seg role=group aria-label="Tile size"><button data-bsize=w>Weight</button><button data-bsize=r>Risk</button></div></div>
-<div class=bkrow><span class=lbl>Colour</span><div class="seg segsm" role=group aria-label="Tile colour"><button data-bcol=score>Score</button><button data-bcol=drank>&Delta;Rank</button><button data-bcol=dscore>&Delta;Score</button><button data-bcol=ret>21D</button><button data-bcol=corr>Corr</button><button data-bcol=risk>Risk%</button></div></div>
+<div class=bkrow><span class=lbl>Colour</span><div class="seg segsm" role=group aria-label="Tile colour"><button data-bcol=score>Score</button><button data-bcol=drank>&Delta;Rank</button><button data-bcol=corr>Corr</button><button data-bcol=risk>Risk%</button></div></div>
 <div class=tm id=tm></div><div id=tmtip></div><p class=dnote id=tmsub style="margin-top:6px"></p>
-<p class=dnote>Tap a tile for details, double-tap for its chart. Size: Risk sizes tiles by weight × volatility, so a volatile name takes a bigger share of the basket's risk than its weight suggests. Colour: Score is the ranking score; ΔRank and ΔScore are the change over the last 21 sessions (is it still working?); 21D is the recent vol-adjusted return; Corr is how much a name moves with the rest of the basket (red = the same bet held again); Risk% is its share of basket variance against its weight.</p>
+<p class=dnote>Tap a tile for details, double-tap for its chart. Size: Risk sizes tiles by weight × volatility, so a volatile name takes a bigger share of the basket's risk than its weight suggests. Colour: Score is the ranking score; ΔRank is the rank change over the last 21 sessions under the same settings (is it still working?); Corr is how much a name moves with the rest of the basket (red = the same bet held again); Risk% is its share of basket variance against its weight.</p>
 <table id=bk></table>
 <p class=dnote>Weights are shares of the basket. Rank is the name's position in the current ranking (— if it is in the data but filtered out by Index/Universe, n/a if it is outside both indexes). Tap a ticker for its chart.</p></div></section>
 </main>
