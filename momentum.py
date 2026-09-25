@@ -252,7 +252,9 @@ th:first-child{border-radius:10px 0 0 10px}th:last-child{border-radius:0 10px 10
 td{padding:10px 14px;border-bottom:1px solid var(--line)}
 th:last-child,td:last-child,.num{text-align:right}
 .today th,.today td{padding-left:10px;padding-right:10px}
-.sortb{border:0;background:none;color:inherit;font:inherit;padding:0;cursor:pointer;display:inline-flex;align-items:center;gap:6px}
+.sortb{border:0;background:none;color:inherit;font:inherit;padding:0;cursor:pointer;display:inline-flex;align-items:center;gap:6px;
+  -webkit-user-select:none;user-select:none;-webkit-touch-callout:none;touch-action:manipulation}
+.sortb.held{opacity:.5}
 .sortb svg path{fill:currentColor;opacity:.35}.sortb[data-dir=desc] .dn,.sortb[data-dir=asc] .up{opacity:1}
 .mv{display:inline-block;overflow:hidden;white-space:nowrap;vertical-align:bottom;font-size:13px;font-weight:600;
   max-width:5em;margin-right:8px;animation:mv 4.5s ease forwards}
@@ -290,7 +292,10 @@ tr.qr td{padding:18px 0;border-bottom:0}  /* room above and below the divider */
 JS = """
 const $=id=>document.getElementById(id),b=document.body;
 // [ticker, cap bucket, daily log returns, change of the latest price vs the prior close]
-const R=DATA.map(([t,c,p])=>[t,c,p.slice(1).map((v,i)=>Math.log(v/p[i])),p[p.length-1]/p[p.length-2]-1]);
+// [ticker, cap bucket, daily log returns, {d1: latest change vs prior close,
+//  d5: 5-trading-day log return ln(P_now / P_5 sessions ago)}]
+const R=DATA.map(([t,c,p])=>{const L=p.length;return[t,c,p.slice(1).map((v,i)=>Math.log(v/p[i])),
+  {d1:p[L-1]/p[L-2]-1,d5:L>5?Math.log(p[L-1]/p[L-6]):null}]});
 const store={get(k,d){try{const v=localStorage.getItem(k);return v===null?d:v}catch(e){return d}},set(k,v){try{localStorage.setItem(k,v)}catch(e){}}};
 function r2of(x){  // mirrors r_squared()
   const y=[0];for(const v of x)y.push(y[y.length-1]+v);
@@ -306,12 +311,12 @@ function score(r,win,skip,vol,r2){
   return r2?out*r2of(x):out;
 }
 const S={caps:new Set(store.get("caps",BUCKETS.join(",")).split(",").filter(c=>BUCKETS.includes(c))),
-  wins:new Set(store.get("wins","12m").split(",").filter(w=>w in WIN)),vol:store.get("vol","0")==="1",r2:store.get("r2","0")==="1",skip:store.get("skip","0")==="1",disp:store.get("disp",store.get("z","0")==="1"?"z":"raw"),today:store.get("today","0")==="1",sort:"",
+  wins:new Set(store.get("wins","12m").split(",").filter(w=>w in WIN)),vol:store.get("vol","0")==="1",r2:store.get("r2","0")==="1",skip:store.get("skip","0")==="1",disp:store.get("disp",store.get("z","0")==="1"?"z":"raw"),today:store.get("today","0")==="1",dmode:store.get("dmode","d1")==="d5"?"d5":"d1",sort:"",
   theme:store.get("theme","auto")};
 if(!["auto","light","dark"].includes(S.theme))S.theme="auto";
 if(!["raw","z","pct","rank"].includes(S.disp))S.disp="raw";
 if(!S.wins.size)S.wins.add("12m");
-const save=()=>{store.set("theme",S.theme);store.set("caps",[...S.caps].join(","));store.set("wins",[...S.wins].join(","));store.set("vol",S.vol?"1":"0");store.set("r2",S.r2?"1":"0");store.set("skip",S.skip?"1":"0");store.set("disp",S.disp);store.set("today",S.today?"1":"0")};
+const save=()=>{store.set("theme",S.theme);store.set("caps",[...S.caps].join(","));store.set("wins",[...S.wins].join(","));store.set("vol",S.vol?"1":"0");store.set("r2",S.r2?"1":"0");store.set("skip",S.skip?"1":"0");store.set("disp",S.disp);store.set("today",S.today?"1":"0");store.set("dmode",S.dmode)};
 // Rank-move badges: after a settings change, rows whose rank moved show a
 // temporary ▲n / ▼n next to the ticker (CSS fades them out).
 let prevRank=null;
@@ -333,10 +338,12 @@ function apply(){
     ...({z:["Z"],pct:["%"],rank:["RANK"]}[S.disp]||[])].join(" \\u2022 ");
   document.querySelectorAll("[data-today]").forEach(x=>x.setAttribute("aria-pressed",String(x.dataset.today==="1")===String(S.today)));
   $("tbl").classList.toggle("today",S.today);$("tday").hidden=!S.today;if(!S.today)S.sort="";$("sortday").dataset.dir=S.sort;
+  $("daylbl").textContent=S.dmode==="d5"?"5D":"Today";
+  $("sortday").setAttribute("aria-label",(S.dmode==="d5"?"Sort by 5-day log return":"Sort by today's change")+"; long-press to switch");
   $("col").innerHTML={z:"Z-score",pct:"Percentile",rank:"Rank"}[S.disp]||
     (S.r2?(vol?"Ret / &sigma; &times; R&sup2;":"Ann. Ret &times; R&sup2;"):vol?"Ann. Return / &sigma;":"Ann. Log Return");
   // Mirrors rank(): per-window scores, optionally z-scored across the pool, then averaged.
-  const rows=[],chg={};for(const [t,,r,d] of pool){const c=wins.map(w=>score(r,WIN[w],skip,vol,S.r2));if(!c.includes(null)){rows.push([t,c]);chg[t]=d}}
+  const rows=[],chg={};for(const [t,,r,d] of pool){const c=wins.map(w=>score(r,WIN[w],skip,vol,S.r2));if(!c.includes(null)){rows.push([t,c]);chg[t]=d[S.dmode]}}
   let cols=wins.map((_,j)=>rows.map(([,c])=>c[j]));
   if(Z)cols=cols.map(col=>{const k=col.length;if(k<2)return col.map(()=>0);
     const m=col.reduce((a,v)=>a+v,0)/k,sd=Math.sqrt(col.reduce((a,v)=>a+(v-m)**2,0)/(k-1));return col.map(v=>sd?(v-m)/sd:0)});
@@ -356,9 +363,11 @@ function apply(){
   // Rows keep their momentum rank (#) and colour; sorting by Today only reorders
   // them, and the percentile lines are shown only in rank order.
   const order=ranked.map((x,i)=>[...x,i]);
-  if(S.sort)order.sort((a,c)=>S.sort==="desc"?chg[c[0]]-chg[a[0]]:chg[a[0]]-chg[c[0]]);
+  // Missing values (short history) always sort last.
+  const cv=t=>chg[t]===null?(S.sort==="desc"?-Infinity:Infinity):chg[t];
+  if(S.sort)order.sort((a,c)=>S.sort==="desc"?cv(c[0])-cv(a[0]):cv(a[0])-cv(c[0]));
   const line=S.sort?{}:q,ncol=S.today?3:2;
-  const day=d=>`<td class="num ${d>0?"up-c":d<0?"dn-c":"fl-c"}">${d>=0?"+":"\\u2212"}${Math.abs(d*100).toFixed(2)}%</td>`;
+  const day=d=>d===null?`<td class="num fl-c">\\u2014</td>`:`<td class="num ${d>0?"up-c":d<0?"dn-c":"fl-c"}">${d>=0?"+":"\\u2212"}${Math.abs(d*100).toFixed(2)}%</td>`;
   const rk={};ranked.forEach(([t],i)=>rk[t]=i);
   const mv=t=>{if(!prevRank||!(t in prevRank))return"";const d=prevRank[t]-rk[t];
     return d?`<span class="mv ${d>0?"mv-up":"mv-dn"}">${d>0?"\\u25b2":"\\u25bc"}${Math.abs(d)}</span>`:""};
@@ -372,7 +381,16 @@ document.querySelectorAll("[data-win]").forEach(x=>x.onclick=()=>{const w=x.data
   if(S.wins.has(w)){if(S.wins.size>1)S.wins.delete(w)}else S.wins.add(w);save();apply()});
 document.querySelectorAll("[data-theme-opt]").forEach(x=>x.onclick=()=>{S.theme=x.dataset.themeOpt;save();apply()});
 document.querySelectorAll("[data-today]").forEach(x=>x.onclick=()=>{S.today=x.dataset.today==="1";save();apply()});
-$("sortday").onclick=()=>{S.sort={"":"desc",desc:"asc",asc:""}[S.sort];apply()};
+// Today header: tap cycles the sort (desc, asc, off); long-press (500 ms)
+// switches between today's change and the 5-day log return without sorting.
+{const btn=$("sortday");let timer=null,longPressed=false;
+  const cancel=()=>{clearTimeout(timer);timer=null;btn.classList.remove("held")};
+  btn.addEventListener("pointerdown",()=>{longPressed=false;btn.classList.add("held");
+    timer=setTimeout(()=>{longPressed=true;cancel();S.dmode=S.dmode==="d5"?"d1":"d5";save();apply();
+      if(navigator.vibrate)navigator.vibrate(10)},500)});
+  ["pointerup","pointerleave","pointercancel"].forEach(ev=>btn.addEventListener(ev,cancel));
+  btn.addEventListener("contextmenu",e=>e.preventDefault());
+  btn.onclick=e=>{if(longPressed){longPressed=false;e.preventDefault();return}S.sort={"":"desc",desc:"asc",asc:""}[S.sort];apply()};}
 document.querySelectorAll("[data-disp]").forEach(x=>x.onclick=()=>{S.disp=x.dataset.disp;save();apply()});
 document.querySelectorAll("[data-r2]").forEach(x=>x.onclick=()=>{S.r2=x.dataset.r2==="1";save();apply()});
 document.querySelectorAll("[data-vol]").forEach(x=>x.onclick=()=>{S.vol=x.dataset.vol==="1";save();apply()});
@@ -399,7 +417,7 @@ def render_html(prices, caps, as_of):
 <title>Return Ranker</title><style>{CSS}</style></head><body><main>
 <header><div><h1>Return Ranker</h1><p class=sum id=sum></p></div><button class=gear id=gear aria-label=Settings aria-expanded=false aria-controls=sheet>{GEAR}</button></header>
 <table id=tbl><thead><tr><th>Ticker</th><th id=col class=num>Ann. Log Return</th>
-<th id=tday class=num hidden><button class=sortb id=sortday data-dir="" aria-label="Sort by today's change">Today{SORT}</button></th></tr></thead><tbody id=rows></tbody></table>
+<th id=tday class=num hidden><button class=sortb id=sortday data-dir="" aria-label="Sort by today's change" title="Tap to sort, long-press for 5-day"><span id=daylbl>Today</span>{SORT}</button></th></tr></thead><tbody id=rows></tbody></table>
 <p class=asof>As of {as_of}</p></main>
 <section class=sheet id=sheet role=region aria-label=Settings>
 <div class=top><h2>Settings</h2><button class=x id=close aria-label="Close settings">&#x2715;</button></div>
