@@ -202,6 +202,9 @@ def rank(returns, window="12m", w6=0.5, skip=0, vol_adjust=False, include=None, 
     return sorted(scored, key=lambda x: x[1], reverse=True)
 
 
+SORT = ('<svg width=10 height=16 viewBox="0 0 10 16" aria-hidden=true><path class=up d="M5 1l4 5H1z"/>'
+        '<path class=dn d="M5 15l4-5H1z"/></svg>')
+
 GEAR = ('<svg width=22 height=22 viewBox="0 0 24 24" fill=currentColor><path d="M19.4 13a7.5 7.5 0 0 0 0-2l2.1-1.6-2-3.5-2.5 1a7.4 '
         '7.4 0 0 0-1.7-1L15 3.3h-4l-.4 2.6a7.4 7.4 0 0 0-1.7 1l-2.5-1-2 3.5L6.6 11a7.5 7.5 0 0 0 0 2l-2.2 1.6 2 3.5 2.5-1a7.4 7.4 0 0 0 '
         '1.7 1l.4 2.6h4l.4-2.6a7.4 7.4 0 0 0 1.7-1l2.5 1 2-3.5zM13 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z" transform="translate(-1 0)"/></svg>')
@@ -230,7 +233,11 @@ th{background:var(--chip);color:var(--muted);font-weight:400;font-size:15px;text
 th:first-child{border-radius:10px 0 0 10px}th:last-child{border-radius:0 10px 10px 0}
 td{padding:12px 14px;border-bottom:1px solid var(--line)}
 th:nth-child(1),td:nth-child(1){width:4.2em}
-th:last-child,td:last-child{text-align:right}
+th:last-child,td:last-child,.num{text-align:right}
+.today th,.today td{padding-left:10px;padding-right:10px}
+.sortb{border:0;background:none;color:inherit;font:inherit;padding:0;cursor:pointer;display:inline-flex;align-items:center;gap:6px}
+.sortb svg path{fill:currentColor;opacity:.35}.sortb[data-dir=desc] .dn,.sortb[data-dir=asc] .up{opacity:1}
+.up-c{color:var(--pos)}.dn-c{color:var(--neg)}.fl-c{color:var(--mid)}
 .empty{color:var(--muted);text-align:center!important;padding:28px}
 tr.q td{border-bottom:0}
 tr.qr td{padding:18px 0;border-bottom:0}  /* room above and below the divider */
@@ -260,7 +267,8 @@ tr.qr td{padding:18px 0;border-bottom:0}  /* room above and below the divider */
 # in market-cap order; daily log returns are derived exactly as daily_log_returns().
 JS = """
 const $=id=>document.getElementById(id),b=document.body;
-const R=DATA.map(([t,c,p])=>[t,c,p.slice(1).map((v,i)=>Math.log(v/p[i]))]);
+// [ticker, cap bucket, daily log returns, change of the latest price vs the prior close]
+const R=DATA.map(([t,c,p])=>[t,c,p.slice(1).map((v,i)=>Math.log(v/p[i])),p[p.length-1]/p[p.length-2]-1]);
 const store={get(k,d){try{const v=localStorage.getItem(k);return v===null?d:v}catch(e){return d}},set(k,v){try{localStorage.setItem(k,v)}catch(e){}}};
 function score(r,win,skip,vol){
   if(r.length<win)return null;
@@ -270,11 +278,11 @@ function score(r,win,skip,vol){
   return ann/(sd*Math.sqrt(YEAR));
 }
 const S={caps:new Set(store.get("caps",BUCKETS.join(",")).split(",").filter(c=>BUCKETS.includes(c))),
-  wins:new Set(store.get("wins","12m").split(",").filter(w=>w in WIN)),vol:store.get("vol","0")==="1",skip:store.get("skip","0")==="1",z:store.get("z","0")==="1",
+  wins:new Set(store.get("wins","12m").split(",").filter(w=>w in WIN)),vol:store.get("vol","0")==="1",skip:store.get("skip","0")==="1",z:store.get("z","0")==="1",today:store.get("today","0")==="1",sort:"",
   theme:store.get("theme","auto")};
 if(!["auto","light","dark"].includes(S.theme))S.theme="auto";
 if(!S.wins.size)S.wins.add("12m");
-const save=()=>{store.set("theme",S.theme);store.set("caps",[...S.caps].join(","));store.set("wins",[...S.wins].join(","));store.set("vol",S.vol?"1":"0");store.set("skip",S.skip?"1":"0");store.set("z",S.z?"1":"0")};
+const save=()=>{store.set("theme",S.theme);store.set("caps",[...S.caps].join(","));store.set("wins",[...S.wins].join(","));store.set("vol",S.vol?"1":"0");store.set("skip",S.skip?"1":"0");store.set("z",S.z?"1":"0");store.set("today",S.today?"1":"0")};
 function apply(){
   const skip=S.skip?SKIP:0,vol=S.vol,wins=["6m","12m"].filter(w=>S.wins.has(w));
   if(S.theme==="auto")delete document.documentElement.dataset.theme;else document.documentElement.dataset.theme=S.theme;
@@ -286,9 +294,12 @@ function apply(){
   const pool=R.filter(([,c])=>S.caps.has(c));
   document.querySelectorAll("[data-z]").forEach(x=>x.setAttribute("aria-pressed",String(x.dataset.z==="1")===String(S.z)));
   $("sum").textContent=[pool.length,wins.map(w=>parseInt(w)).join("/"),...(vol?["VOL"]:[]),...(skip?["S"+SKIP]:[]),...(S.z?["Z"]:[])].join(" \\u2022 ");
-  $("col").innerHTML=(S.z?"Z-score":"")+(S.z?(vol?" (Ret / &sigma;)":" (Ann. Return)"):vol?"Ann. Return / &sigma;":"Ann. Log Return");
+  document.querySelectorAll("[data-today]").forEach(x=>x.setAttribute("aria-pressed",String(x.dataset.today==="1")===String(S.today)));
+  $("tbl").classList.toggle("today",S.today);$("tday").hidden=!S.today;if(!S.today)S.sort="";$("sortday").dataset.dir=S.sort;
+  $("col").innerHTML=S.today?(S.z?"Z-score":vol?"Ret / &sigma;":"Ann. Ret"):
+    (S.z?"Z-score":"")+(S.z?(vol?" (Ret / &sigma;)":" (Ann. Return)"):vol?"Ann. Return / &sigma;":"Ann. Log Return");
   // Mirrors rank(): per-window scores, optionally z-scored across the pool, then averaged.
-  const rows=[];for(const [t,,r] of pool){const c=wins.map(w=>score(r,WIN[w],skip,vol));if(!c.includes(null))rows.push([t,c])}
+  const rows=[],chg={};for(const [t,,r,d] of pool){const c=wins.map(w=>score(r,WIN[w],skip,vol));if(!c.includes(null)){rows.push([t,c]);chg[t]=d}}
   let cols=wins.map((_,j)=>rows.map(([,c])=>c[j]));
   if(S.z)cols=cols.map(col=>{const k=col.length;if(k<2)return col.map(()=>0);
     const m=col.reduce((a,v)=>a+v,0)/k,sd=Math.sqrt(col.reduce((a,v)=>a+(v-m)**2,0)/(k-1));return col.map(v=>sd?(v-m)/sd:0)});
@@ -303,14 +314,22 @@ function apply(){
   // (sqrt easing so colour builds quickly away from the median).
   const grad=i=>{const t=n>1?1-i/(n-1):1,end=t>=.5?"--pos":"--neg";
     return `color-mix(in oklab,var(${end}) ${Math.round(Math.sqrt(Math.abs(t-.5)*2)*100)}%,var(--mid))`};
-  $("rows").innerHTML=n?ranked.map(([t,v],i)=>`<tr${q[i]?" class=q":""}><td>${i+1}</td><td>${t}</td><td style="color:${grad(i)}">${fmt(v)}</td></tr>`+
-    (q[i]?`<tr class=qr><td><div class=ql></div></td><td><div class=ql>${q[i]}</div></td><td><div class=ql></div></td></tr>`:"")).join("")
-    :`<tr><td colspan=3 class=empty>${S.caps.size?"No stocks in the selected market caps.":"Select at least one market cap."}</td></tr>`;
+  // Rows keep their momentum rank (#) and colour; sorting by Today only reorders
+  // them, and the percentile lines are shown only in rank order.
+  const order=ranked.map((x,i)=>[...x,i]);
+  if(S.sort)order.sort((a,c)=>S.sort==="desc"?chg[c[0]]-chg[a[0]]:chg[a[0]]-chg[c[0]]);
+  const line=S.sort?{}:q,ncol=S.today?4:3;
+  const day=d=>`<td class="num ${d>0?"up-c":d<0?"dn-c":"fl-c"}">${d>=0?"+":"\\u2212"}${Math.abs(d*100).toFixed(2)}%</td>`;
+  $("rows").innerHTML=n?order.map(([t,v,i])=>`<tr${line[i]?" class=q":""}><td>${i+1}</td><td>${t}</td><td class=num style="color:${grad(i)}">${fmt(v)}</td>${S.today?day(chg[t]):""}</tr>`+
+    (line[i]?`<tr class=qr><td><div class=ql></div></td><td><div class=ql>${line[i]}</div></td>`+`<td><div class=ql></div></td>`.repeat(ncol-2)+`</tr>`:"")).join("")
+    :`<tr><td colspan=${ncol} class=empty>${S.caps.size?"No stocks in the selected market caps.":"Select at least one market cap."}</td></tr>`;
 }
 document.querySelectorAll("[data-cap]").forEach(x=>x.onclick=()=>{const c=x.dataset.cap;S.caps.has(c)?S.caps.delete(c):S.caps.add(c);save();apply()});
 document.querySelectorAll("[data-win]").forEach(x=>x.onclick=()=>{const w=x.dataset.win;
   if(S.wins.has(w)){if(S.wins.size>1)S.wins.delete(w)}else S.wins.add(w);save();apply()});
 document.querySelectorAll("[data-theme-opt]").forEach(x=>x.onclick=()=>{S.theme=x.dataset.themeOpt;save();apply()});
+document.querySelectorAll("[data-today]").forEach(x=>x.onclick=()=>{S.today=x.dataset.today==="1";save();apply()});
+$("sortday").onclick=()=>{S.sort={"":"desc",desc:"asc",asc:""}[S.sort];apply()};
 document.querySelectorAll("[data-z]").forEach(x=>x.onclick=()=>{S.z=x.dataset.z==="1";save();apply()});
 document.querySelectorAll("[data-vol]").forEach(x=>x.onclick=()=>{S.vol=x.dataset.vol==="1";save();apply()});
 document.querySelectorAll("[data-skip]").forEach(x=>x.onclick=()=>{S.skip=x.dataset.skip==="1";save();apply()});
@@ -333,7 +352,8 @@ def render_html(prices, caps, as_of):
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>Return Ranker</title><style>{CSS}</style></head><body><main>
 <header><button class=gear id=gear aria-label=Settings>{GEAR}</button><h1>Return Ranker</h1><p class=sum id=sum></p></header>
-<table><thead><tr><th>#</th><th>Ticker</th><th id=col>Ann. Log Return</th></tr></thead><tbody id=rows></tbody></table>
+<table id=tbl><thead><tr><th>#</th><th>Ticker</th><th id=col class=num>Ann. Log Return</th>
+<th id=tday class=num hidden><button class=sortb id=sortday data-dir="" aria-label="Sort by today's change">Today{SORT}</button></th></tr></thead><tbody id=rows></tbody></table>
 <p class=asof>As of {as_of}</p></main>
 <div class=scrim id=scrim></div>
 <section class=sheet role=dialog aria-label=Settings><div class=grip></div>
@@ -343,6 +363,7 @@ def render_html(prices, caps, as_of):
 <div class=row><p class=lbl>Volatility</p><div class=seg role=group aria-label=Volatility><button data-vol=0>Off</button><button data-vol=1>On</button></div></div>
 <div class=row><p class=lbl>Skip</p><div class=seg role=group aria-label=Skip><button data-skip=0>None</button><button data-skip=1>{SKIP}</button></div></div>
 <div class=row><p class=lbl>Z-score</p><div class=seg role=group aria-label=Z-score><button data-z=0>Off</button><button data-z=1>On</button></div></div>
+<div class=row><p class=lbl>Today</p><div class=seg role=group aria-label="Today's change"><button data-today=0>Off</button><button data-today=1>On</button></div></div>
 <div class=row><p class=lbl>Appearance</p><div class=seg role=group aria-label=Appearance><button data-theme-opt=auto>Auto</button><button data-theme-opt=light>Light</button><button data-theme-opt=dark>Dark</button></div></div>
 </section>
 <script>{consts}{JS}</script></body></html>"""
