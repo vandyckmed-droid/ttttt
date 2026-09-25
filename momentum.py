@@ -360,9 +360,9 @@ GEAR = ('<svg width=22 height=22 viewBox="0 0 24 24" fill=currentColor><path d="
 
 # Theme tokens. --pos/--mid/--neg are the ends and middle of the value gradient.
 LIGHT = ("--bg:#f5f5f7;--fg:#111418;--muted:#6e737b;--chip:#e9e9ec;--sel:#fff;--line:#e3e3e6;--sheet:#fff;"
-         "--pos:#0f9d47;--mid:#8a8f97;--neg:#d8342a;--shadow:0 1px 3px rgba(0,0,0,.12);color-scheme:light")
+         "--pos:#0f9d47;--mid:#8a8f97;--neg:#d8342a;--shadow:0 1px 3px rgba(0,0,0,.12);--tshadow:none;color-scheme:light")
 DARK = ("--bg:#0b0b0c;--fg:#f2f2f4;--muted:#8e9299;--chip:#1c1c1f;--sel:#3a3a3e;--line:#26262a;--sheet:#161618;"
-        "--pos:#3ee07a;--mid:#8e9299;--neg:#ff5f55;--shadow:none;color-scheme:dark")
+        "--pos:#3ee07a;--mid:#8e9299;--neg:#ff5f55;--shadow:none;--tshadow:0 1px 2px rgba(0,0,0,.45);color-scheme:dark")
 
 # Appearance: Auto follows the OS; Light/Dark set data-theme on <html>.
 CSS = f"""
@@ -385,8 +385,8 @@ main{max-width:560px;margin:0 auto;padding:12px 16px calc(var(--tabh) + 16px)}
 body[data-tab=lab] #ranktab,body:not([data-tab=lab]) #lab{display:none}
 /* Lab: 21-day cumulative log-return heatmap */
 .labh{margin:6px 0 10px}.labh h2{font-size:17px;margin:0}.labh p{margin:2px 0 0;color:var(--muted);font-size:13px}
-.hm{display:grid;grid-template-columns:3.4em repeat(var(--cols,21),1fr) 4.6em;gap:2px;font-size:12px;font-variant-numeric:tabular-nums;position:relative}
-.hm .rl{color:var(--fg);font-weight:500;display:flex;align-items:center;cursor:pointer;padding-right:4px;overflow:hidden}
+.hm{display:grid;grid-template-columns:3.9em repeat(var(--cols,21),1fr) 4.6em;gap:2px;font-size:12px;font-variant-numeric:tabular-nums;position:relative}
+.hm .rl{color:var(--fg);font-weight:500;display:flex;align-items:center;cursor:pointer;padding-right:4px;overflow:hidden;white-space:nowrap}
 .hm .rv{color:var(--muted);display:flex;align-items:center;justify-content:flex-end;padding-left:4px}
 .hm .cl{color:var(--muted);font-size:10px;text-align:center;overflow:visible;white-space:nowrap}
 .hm .c{height:18px;border-radius:3px;background:var(--chip)}
@@ -395,24 +395,23 @@ body[data-tab=lab] #ranktab,body:not([data-tab=lab]) #lab{display:none}
 .lg{display:flex;align-items:center;gap:8px;margin:12px 0 0;font-size:12px;color:var(--muted)}
 .lg .bar{flex:1;height:10px;border-radius:5px;background:linear-gradient(90deg,var(--neg),var(--chip),var(--pos))}
 /* Correlation matrix + dendrogram */
-.cm{display:grid;grid-template-columns:44px 3.4em repeat(var(--n,1),1fr);gap:1px;font-size:12px;position:relative;align-items:stretch}
-.cm .cl{writing-mode:vertical-rl;transform:rotate(180deg);font-size:9px;color:var(--muted);text-align:left;line-height:1;padding:2px 0;height:34px;overflow:hidden}
+.cm{display:grid;grid-template-columns:44px 3.9em repeat(var(--n,1),1fr);gap:1px;font-size:12px;position:relative;align-items:stretch}
+.cm .cl{writing-mode:vertical-rl;transform:rotate(180deg);font-size:9px;color:var(--muted);text-align:left;line-height:1;padding:2px 0;height:40px;overflow:hidden}
 .cm .c{height:16px;border-radius:2px;background:var(--chip);min-width:0}
 .cm .c.self{background:var(--line)}
 .cm .c.on{outline:2px solid var(--fg);outline-offset:-1px}
-.cm .rl{height:16px;line-height:16px;font-weight:500;cursor:pointer;overflow:hidden;padding-right:3px}
+.cm .rl{height:16px;line-height:16px;font-weight:500;cursor:pointer;overflow:hidden;padding-right:3px;white-space:nowrap}
 .cm .dg{grid-column:1;position:relative}
 .cm .dg svg{position:absolute;inset:0;width:100%;height:100%}
 .cm .dg path{fill:none;stroke:var(--muted);stroke-width:1.2}
 .labsec{margin-top:26px}
-.tm{position:relative;width:100%;aspect-ratio:1/1;margin:10px 0 6px;border-radius:12px;overflow:hidden}
+.tm{position:relative;width:100%;aspect-ratio:1/1;margin:10px 0 0;border-radius:12px;overflow:hidden}
 .tm .t{position:absolute;box-sizing:border-box;border:2px solid var(--bg);border-radius:6px;overflow:hidden;cursor:pointer;
-  display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;line-height:1.15;color:var(--fg)}
+  display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;line-height:1.15;color:var(--fg);text-shadow:var(--tshadow)}
 .tm .t b{font-size:13px}.tm .t small{font-size:11px;opacity:.85}
 .tm .t.xs b{font-size:10px}.tm .t.xs small{display:none}
 .tm .t.on{outline:2px solid var(--fg);outline-offset:-3px}
-.bkctl{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;margin-top:8px}
-.bkctl .seg{min-width:11em}
+.bkrow{display:grid;grid-template-columns:3.6em 1fr;gap:8px;align-items:center;margin-top:8px}.bkrow .lbl{margin:0}
 .segsm button{font-size:12px;padding:5px 0}
 #bk{margin-top:4px}#bk tr.muted td{color:var(--muted)}#bk td{padding:9px 14px}#bk th{padding:8px 14px}
 .hmtip{position:absolute;z-index:3;background:var(--sheet);border:1px solid var(--line);border-radius:8px;padding:4px 8px;font-size:12px;
@@ -442,9 +441,9 @@ th:last-child,td:last-child,.num{text-align:right}
 .menu button:focus-visible{outline:2px solid var(--pos)}
 .sortb svg path{fill:currentColor;opacity:.35}.sortb[data-dir=desc] .dn,.sortb[data-dir=asc] .up{opacity:1}
 .mv{display:inline-block;overflow:hidden;white-space:nowrap;vertical-align:bottom;font-size:13px;font-weight:600;
-  max-width:5em;margin-right:8px;animation:mv 4.5s ease forwards}
+  max-width:5em;margin-left:8px;animation:mv 4.5s ease forwards}
 .mv-up{color:var(--pos)}.mv-dn{color:var(--neg)}
-@keyframes mv{0%,70%{opacity:1;max-width:5em;margin-right:8px}100%{opacity:0;max-width:0;margin-right:0}}
+@keyframes mv{0%,70%{opacity:1;max-width:5em;margin-left:8px}100%{opacity:0;max-width:0;margin-left:0}}
 @media (prefers-reduced-motion:reduce){.mv{animation-duration:6s;animation-timing-function:steps(1,end)}}
 .up-c{color:var(--pos)}.dn-c{color:var(--neg)}.fl-c{color:var(--mid)}
 .empty{color:var(--muted);text-align:center!important;padding:28px}
@@ -505,7 +504,7 @@ tbody tr[data-t]{cursor:pointer}tbody tr[data-t]:active td{background:var(--chip
 .keyst{font-size:12px;color:var(--muted);margin:4px 0 0;min-height:1em}.keyst.ok{color:var(--pos)}.keyst.err{color:var(--neg)}
 .lbl{color:var(--muted);font-size:12px;letter-spacing:.03em;margin:0 0 4px}
 .seg{display:grid;grid-auto-columns:1fr;grid-auto-flow:column;background:var(--chip);border-radius:10px;padding:2px;gap:2px}
-.seg button{border:0;background:none;color:var(--muted);font:inherit;font-size:14px;padding:6px 0;border-radius:8px;cursor:pointer}
+.seg button{border:0;background:none;color:var(--muted);font:inherit;font-size:14px;padding:6px 4px;border-radius:8px;cursor:pointer;white-space:nowrap}
 .seg button[aria-pressed=true]{background:var(--sel);color:var(--fg);font-weight:500;box-shadow:var(--shadow)}
 .seg button:focus-visible{outline:2px solid var(--pos);outline-offset:1px}
 """
@@ -576,7 +575,7 @@ function apply(){
   // with zscore=True), percentile (100% = top) or rank position.
   const Z=S.disp==="z";
   document.querySelectorAll("[data-disp]").forEach(x=>x.setAttribute("aria-checked",x.dataset.disp===S.disp));
-  $("sum").textContent=[pool.length+(S.idx.size===2?" (500+400)":S.idx.has("400")?" (400)":""),wins.map(w=>parseInt(w)).join("/"),...(vol?["VOL"]:[]),...(S.r2?["R\\u00b2"]:[]),...(skip?["S"+SKIP]:[]),
+  $("sum").textContent=[pool.length+(S.idx.size===2?" (500+400)":S.idx.has("400")?" (400)":""),wins.map(w=>w.toUpperCase()).join("+"),...(vol?["VOL"]:[]),...(S.r2?["R\\u00b2"]:[]),...(skip?["S"+SKIP]:[]),
     ...({z:["Z"],pct:["%"],rank:["RANK"]}[S.disp]||[])].join(" \\u2022 ");
   document.querySelectorAll("[data-today]").forEach(x=>x.setAttribute("aria-pressed",String(x.dataset.today==="1")===String(S.today)));
   $("tbl").classList.toggle("today",S.today);$("tday").hidden=!S.today;if(!S.today&&S.sortCol==="day")S.sort="";if(!S.sort)S.sortCol="";
@@ -619,7 +618,7 @@ function apply(){
   lastRank={};ranked.forEach(([t,v],i)=>lastRank[t]=[i,fmt(v,i)]);
   lastScoreOf=r=>{const c=wins.map(w=>score(r,WIN[w],skip,vol,S.r2));return c.includes(null)?null:c.reduce((a,v)=>a+v,0)/c.length};
   lastPoolRaw=rows.map(([,c])=>c.reduce((a,v)=>a+v,0)/c.length).sort((a,c)=>a-c);lastPool=pool;applyN++;
-  $("rows").innerHTML=n?order.map(([t,v,i])=>`<tr data-t="${t}"${line[i]?" class=q":""}><td>${mv(t)}${t}</td><td class=num style="color:${grad(i)}">${fmt(v,i)}</td>${S.today?day(chg[t]):""}</tr>`+
+  $("rows").innerHTML=n?order.map(([t,v,i])=>`<tr data-t="${t}"${line[i]?" class=q":""}><td>${t}${mv(t)}</td><td class=num style="color:${grad(i)}">${fmt(v,i)}</td>${S.today?day(chg[t]):""}</tr>`+
     (line[i]?`<tr class=qr><td><div class=ql>${line[i]}</div></td>`+`<td><div class=ql></div></td>`.repeat(ncol-1)+`</tr>`:"")).join("")
     :`<tr><td colspan=${ncol} class=empty>${S.caps.size?"No stocks in the selected market caps.":"Select at least one market cap."}</td></tr>`;
   prevRank=rk;
@@ -844,15 +843,17 @@ async function liveIntraday(t){const today=nyDate(Date.now()/1000),from=new Date
   for(const r of rows){if(r.date.slice(0,10)!==day)continue;const i=Math.floor((+r.date.slice(11,13)*60+ +r.date.slice(14,16)-570)/5);if(i>=0&&i<BARS)bars[i]=r.close}
   const ks=Object.keys(bars).map(Number);if(!ks.length)return null;const lo=Math.min(...ks),hi=Math.max(...ks);
   return[day,lo,Array.from({length:hi-lo+1},(_,j)=>bars[lo+j]??null)]}
+// Brief status in the "As of" line, then back to the timestamp.
+let flashT=null;const flash=m=>{const a=$("asof");a.textContent=m;clearTimeout(flashT);flashT=setTimeout(()=>a.textContent="As of "+PAYLOAD.asOf,3500)};
 $("refresh").onclick=async()=>{const btn=$("refresh");if(btn.classList.contains("busy"))return;
   btn.classList.add("busy");btn.classList.remove("ok","err");
   try{let P=PAYLOAD;try{const r=await fetch("data.json?_="+Date.now(),{cache:"no-store"});if(r.ok){const Q=await r.json();if(Q.asOf!==PAYLOAD.asOf.replace(" · live",""))P=Q}}catch(e){}
-    let msg="Updated "+P.asOf;
-    if(getKey()){P=JSON.parse(JSON.stringify(P));const n=await liveQuotes(P);msg=`Live quotes for ${n} tickers · ${P.asOf}`;
+    let msg="Updated · "+P.asOf;
+    if(getKey()){P=JSON.parse(JSON.stringify(P));const n=await liveQuotes(P);msg=`Live quotes · ${n} tickers · ${P.asOf}`;
       if(cur){const it=await liveIntraday(cur).catch(()=>null);if(it)P.intra[cur]=it}}
-    else if(P===PAYLOAD)msg="Already up to date ("+P.asOf+") — add an FMP key in Settings for live quotes";
-    setPayload(P);apply();if(cur)showDetail(cur,true);btn.classList.add("ok");btn.title=msg}
-  catch(e){btn.classList.add("err");btn.title="Refresh failed: "+e.message;$("keyst").textContent=e.message;$("keyst").className="keyst err"}
+    else if(P===PAYLOAD)msg="Up to date · "+P.asOf;
+    setPayload(P);apply();if(cur)showDetail(cur,true);btn.classList.add("ok");btn.title=msg+(getKey()?"":" — add an FMP key in Settings for live quotes");flash(msg)}
+  catch(e){btn.classList.add("err");btn.title="Refresh failed: "+e.message;flash("Refresh failed · "+e.message);$("keyst").textContent=e.message;$("keyst").className="keyst err"}
   finally{btn.classList.remove("busy");setTimeout(()=>btn.classList.remove("ok","err"),1500)}};
 // Key entry (Settings). Save tests the key with one quote call.
 const keyStatus=(m,c)=>{$("keyst").textContent=m;$("keyst").className="keyst "+(c||"")};
@@ -883,7 +884,7 @@ function drawChart(t){
   if(!sr){box.innerHTML=`<svg viewBox="0 0 ${W} ${H}"><text x="${W/2}" y="${H/2}" text-anchor="middle">No intraday data yet</text></svg>`;$("hzc").textContent="";return}
   const vals=sr.ys.filter(v=>v!==null),last=vals[vals.length-1],up=last>=sr.ref;
   let lo=Math.min(...vals,sr.ref),hi=Math.max(...vals,sr.ref);if(hi===lo){hi+=.5;lo-=.5}
-  const pad=(hi-lo)*.08;lo-=pad;hi+=pad;
+  const pad=(hi-lo)*.08;lo=Math.max(0,lo-pad);hi+=pad;
   const X=i=>padL+i/(sr.n-1)*(W-padL-padR),Y=v=>padT+(hi-v)/(hi-lo)*(H-padT-padB);
   let d="",area="",pen=false,firstX=null,lastX=null;
   sr.ys.forEach((v,i)=>{if(v===null){pen=false;return}const x=X(i),y=Y(v);d+=(pen?"L":"M")+x.toFixed(1)+" "+y.toFixed(1);pen=true;if(firstX===null)firstX=x;lastX=x});
@@ -910,7 +911,7 @@ function showDetail(t,keep){cur=t;
     liveIntraday(t).then(it=>{if(it){INTRA[t]=it;if(cur===t)drawChart(t)}}).catch(()=>{})}const p=PX[t],m=META[t]||["","",""],L=p.length,d1=p[L-1]-p[L-2];
   const ix=(R.find(x=>x[0]===t)||[])[4];$("dtick").textContent=t;$("dname").textContent=m[0];$("dsec").textContent=[ix?"S&P "+ix:"",m[1],m[2]].filter(Boolean).join(" · ");
   $("dprice").textContent=money(p[L-1]);const c=$("dchg");c.textContent=`${sgnMoney(d1)} (${pct(d1/p[L-2])}) today`;c.style.color=d1>=0?"var(--pos)":"var(--neg)";
-  const lr=lastRank[t];$("drank").textContent=lr?`Rank #${lr[0]+1} of ${Object.keys(lastRank).length} · ${lr[1]} · ${$("sum").textContent}`:"Not in the current universe";
+  const lr=lastRank[t];$("drank").textContent=lr?`Rank #${lr[0]+1} of ${Object.keys(lastRank).length} · ${lr[1]} · ${$("sum").textContent.replace(/ \\u2022 /g," · ")}`:"Not in the current universe";
   document.querySelectorAll("[data-hz]").forEach(x=>x.setAttribute("aria-pressed",x.dataset.hz===hz));$("hzl").textContent=hz;
   drawChart(t);if(!keep){b.classList.add("dopen");$("detail").classList.add("on");$("dclose").focus()}}
 const closeDetail=()=>{b.classList.remove("dopen");$("detail").classList.remove("on");cur=null};
@@ -966,7 +967,7 @@ def render_html(prices, caps, as_of, meta=None, dates=None, intra=None):
 </div>
 <section id=lab aria-label=Lab><div class=labh><h2 id=labttl>1M cumulative log return</h2><p id=labsub></p></div>
 <div style="display:grid;grid-template-columns:1fr auto;gap:8px;margin-bottom:10px"><div class=seg role=group aria-label="Cumulative window"><button data-lw=1M>1M</button><button data-lw=3M>3M</button><button data-lw=6M>6M</button><button data-lw=1Y>1Y</button></div>
-<div class=seg role=group aria-label="Cell value"><button data-lv=0>Raw</button><button data-lv=1>Vol-adj</button></div></div>
+<div class=seg role=group aria-label="Cell value" style="min-width:9.5em"><button data-lv=0>Raw</button><button data-lv=1>Vol-adj</button></div></div>
 <div class=hm id=hm></div>
 <div class=lg><span id=lgmin></span><span class=bar></span><span id=lgmax></span></div>
 <p class=dnote>Each cell covers the window from its start to that column's close (the latest price for today): Raw is the cumulative log return; Vol-adj is Σr / (σ√N) of those same daily returns (the first daily cell has N=1 and shows 0). 1M shows every session, longer windows the end of each 5-session week. The right column is the full-window figure. Colour saturates at the 95th percentile of the grid. Tap a cell for the value, a ticker for its chart.</p>
@@ -976,9 +977,9 @@ def render_html(prices, caps, as_of, meta=None, dates=None, intra=None):
 <div class=lg><span id=cmmin></span><span class=bar></span><span id=cmmax></span></div>
 <p class=dnote>Rows and columns follow the dendrogram's optimal leaf order, so neighbours are the most correlated pairs; the tree on the left shows the average-linkage merges (further left = merged at a larger 1−ρ). Colour saturates at the 95th percentile of |ρ| off the diagonal. Tap a cell for ρ, a ticker for its chart.</p>
 <div id=bksec hidden><div class="labh labsec"><h2>Basket</h2><p id=bksub></p></div>
-<div class=bkctl><p class=dnote style="margin:0" id=tmsub></p><div class=seg role=group aria-label="Tile size"><button data-bsize=w>Weight</button><button data-bsize=r>Risk</button></div></div>
-<div class="seg segsm" role=group aria-label="Tile colour" style="margin-top:8px"><button data-bcol=score>Score</button><button data-bcol=drank>&Delta;Rank</button><button data-bcol=dscore>&Delta;Score</button><button data-bcol=ret>21D</button><button data-bcol=corr>Corr</button><button data-bcol=risk>Risk%</button></div>
-<div class=tm id=tm></div><div id=tmtip></div>
+<div class=bkrow><span class=lbl>Size</span><div class=seg role=group aria-label="Tile size"><button data-bsize=w>Weight</button><button data-bsize=r>Risk</button></div></div>
+<div class=bkrow><span class=lbl>Colour</span><div class="seg segsm" role=group aria-label="Tile colour"><button data-bcol=score>Score</button><button data-bcol=drank>&Delta;Rank</button><button data-bcol=dscore>&Delta;Score</button><button data-bcol=ret>21D</button><button data-bcol=corr>Corr</button><button data-bcol=risk>Risk%</button></div></div>
+<div class=tm id=tm></div><div id=tmtip></div><p class=dnote id=tmsub style="margin-top:6px"></p>
 <p class=dnote>Tap a tile for details, double-tap for its chart. Size: Risk sizes tiles by weight × volatility, so a volatile name takes a bigger share of the basket's risk than its weight suggests. Colour: Score is the ranking score; ΔRank and ΔScore are the change over the last 21 sessions (is it still working?); 21D is the recent vol-adjusted return; Corr is how much a name moves with the rest of the basket (red = the same bet held again); Risk% is its share of basket variance against its weight.</p>
 <table id=bk></table>
 <p class=dnote>Weights are shares of the basket. Rank is the name's position in the current ranking (— if it is in the data but filtered out by Index/Universe, n/a if it is outside both indexes). Tap a ticker for its chart.</p></div></section>
