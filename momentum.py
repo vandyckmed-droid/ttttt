@@ -285,8 +285,29 @@ CSS = f"""
 :root[data-theme=light]{{{LIGHT}}}
 """ + """*{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.4 -apple-system,BlinkMacSystemFont,"Inter","Segoe UI",system-ui,sans-serif}
-main{max-width:560px;margin:0 auto;padding:12px 16px 40px}
-.open main{padding-bottom:calc(var(--sheet-h,50vh) + 16px)}  /* keep the table scrollable above the sheet */
+:root{--tabh:calc(52px + env(safe-area-inset-bottom))}
+main{max-width:560px;margin:0 auto;padding:12px 16px calc(var(--tabh) + 16px)}
+.open main{padding-bottom:calc(var(--sheet-h,50vh) + var(--tabh) + 16px)}  /* keep the content scrollable above the sheet */
+/* Bottom tab bar: Rank (the list) and Lab (experiments) */
+.tabs{position:fixed;left:0;right:0;bottom:0;z-index:15;height:var(--tabh);padding-bottom:env(safe-area-inset-bottom);
+  background:var(--sheet);border-top:1px solid var(--line);display:flex;justify-content:center;gap:8px}
+.tabs button{flex:1;max-width:280px;border:0;background:none;color:var(--muted);font:inherit;font-size:12px;font-weight:500;cursor:pointer;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px}
+.tabs button .ico{font-size:20px;line-height:1}
+.tabs button[aria-selected=true]{color:var(--fg)}
+body[data-tab=lab] #ranktab,body:not([data-tab=lab]) #lab{display:none}
+/* Lab: 21-day cumulative log-return heatmap */
+.labh{margin:6px 0 10px}.labh h2{font-size:17px;margin:0}.labh p{margin:2px 0 0;color:var(--muted);font-size:13px}
+.hm{display:grid;grid-template-columns:3.4em repeat(var(--cols,21),1fr) 4.1em;gap:2px;font-size:12px;font-variant-numeric:tabular-nums;position:relative}
+.hm .rl{color:var(--fg);font-weight:500;display:flex;align-items:center;cursor:pointer;padding-right:4px;overflow:hidden}
+.hm .rv{color:var(--muted);display:flex;align-items:center;justify-content:flex-end;padding-left:4px}
+.hm .cl{color:var(--muted);font-size:10px;text-align:center;overflow:visible;white-space:nowrap}
+.hm .c{height:18px;border-radius:3px;background:var(--chip)}
+.hm .c.on{outline:2px solid var(--fg);outline-offset:-1px}
+.lg{display:flex;align-items:center;gap:8px;margin:12px 0 0;font-size:12px;color:var(--muted)}
+.lg .bar{flex:1;height:10px;border-radius:5px;background:linear-gradient(90deg,var(--neg),var(--chip),var(--pos))}
+.hmtip{position:absolute;z-index:3;background:var(--sheet);border:1px solid var(--line);border-radius:8px;padding:4px 8px;font-size:12px;
+  white-space:nowrap;pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,.12);transform:translate(-50%,-110%)}
 header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:4px 0 12px}
 h1{font-size:22px;font-weight:700;letter-spacing:-.01em;margin:0}
 .gear{flex:none;width:40px;height:40px;border:0;border-radius:12px;background:var(--chip);color:var(--fg);cursor:pointer;display:grid;place-items:center}
@@ -359,7 +380,7 @@ tbody tr[data-t]{cursor:pointer}tbody tr[data-t]:active td{background:var(--chip
 .dnote{color:var(--muted);font-size:12px;margin:14px 0 0}
 /* Compact, non-modal settings panel: no dimming, the table stays visible and
    scrollable above it so rank moves can be watched while toggling. */
-.sheet{position:fixed;left:0;right:0;bottom:0;max-width:560px;margin:0 auto;background:var(--sheet);border-radius:18px 18px 0 0;
+.sheet{position:fixed;left:0;right:0;bottom:var(--tabh);max-width:560px;margin:0 auto;background:var(--sheet);border-radius:18px 18px 0 0;
   padding:8px 14px calc(12px + env(safe-area-inset-bottom));max-height:55vh;overflow:auto;transform:translateY(105%);transition:transform .25s ease;
   box-shadow:0 -6px 24px rgba(0,0,0,.18);border-top:1px solid var(--line)}
 .open .sheet{transform:none}
@@ -411,7 +432,9 @@ if(!S.wins.size)S.wins.add("12m");
 const save=()=>{store.set("theme",S.theme);store.set("caps",[...S.caps].join(","));store.set("wins",[...S.wins].join(","));store.set("vol",S.vol?"1":"0");store.set("r2",S.r2?"1":"0");store.set("skip",S.skip?"1":"0");store.set("disp",S.disp);store.set("today",S.today?"1":"0");store.set("dmode",S.dmode)};
 // Rank-move badges: after a settings change, rows whose rank moved show a
 // temporary ▲n / ▼n next to the ticker (CSS fades them out).
-let prevRank=null,lastRank={};
+let prevRank=null,lastRank={},labNames=[];
+const LABN=21;  // Lab heatmap window (sessions)
+const fmtDate=d=>{const [y,m,dd]=d.split("-");return new Date(+y,m-1,+dd).toLocaleDateString(undefined,{month:"short",day:"numeric"})};
 function apply(){
   const skip=S.skip?SKIP:0,vol=S.vol,wins=["6m","12m"].filter(w=>S.wins.has(w));
   if(S.theme==="auto")delete document.documentElement.dataset.theme;else document.documentElement.dataset.theme=S.theme;
@@ -471,6 +494,7 @@ function apply(){
     (line[i]?`<tr class=qr><td><div class=ql>${line[i]}</div></td>`+`<td><div class=ql></div></td>`.repeat(ncol-1)+`</tr>`:"")).join("")
     :`<tr><td colspan=${ncol} class=empty>${S.caps.size?"No stocks in the selected market caps.":"Select at least one market cap."}</td></tr>`;
   prevRank=rk;
+  labNames=ranked.slice(0,Math.round(n*0.05)).map(([t])=>t);renderLab();
 }
 document.querySelectorAll("[data-cap]").forEach(x=>x.onclick=()=>{const c=x.dataset.cap;S.caps.has(c)?S.caps.delete(c):S.caps.add(c);save();apply()});
 document.querySelectorAll("[data-win]").forEach(x=>x.onclick=()=>{const w=x.dataset.win;
@@ -500,6 +524,29 @@ document.querySelectorAll("[data-r2]").forEach(x=>x.onclick=()=>{S.r2=x.dataset.
 document.querySelectorAll("[data-vol]").forEach(x=>x.onclick=()=>{S.vol=x.dataset.vol==="1";save();apply()});
 document.querySelectorAll("[data-skip]").forEach(x=>x.onclick=()=>{S.skip=x.dataset.skip==="1";save();apply()});
 apply();
+// ---- Lab: cumulative 21-day log return, day by day, for every name above P95.
+function renderLab(){const el=$("hm");if(!el)return;
+  const names=labNames.filter(t=>PX[t]&&PX[t].length>LABN);
+  $("labsub").textContent=names.length?`${names.length} names above P95 · running sum of daily log returns over the last ${LABN} sessions · ${$("sum").textContent}`:"No names above P95 in the current universe.";
+  if(!names.length){el.innerHTML="";return}
+  const rows=names.map(t=>{const p=PX[t],L=p.length,base=p[L-1-LABN];let c=0;return[t,p.slice(L-LABN).map(v=>Math.log(v/base))]});
+  const all=rows.flatMap(r=>r[1].map(Math.abs)).sort((a,c)=>a-c),vmax=all[Math.floor(all.length*.95)]||1e-9;
+  const ds=DATES.slice(DATES.length-LABN);
+  const col=v=>`color-mix(in oklab,var(${v>=0?"--pos":"--neg"}) ${Math.round(Math.min(1,Math.abs(v)/vmax)*100)}%,var(--chip))`;
+  const p=v=>(v>=0?"+":"−")+Math.abs(v*100).toFixed(1)+"%";
+  el.style.setProperty("--cols",LABN);
+  el.innerHTML=`<div></div>`+ds.map((d,i)=>`<div class=cl>${i%5===0||i===LABN-1?fmtDate(d).replace(/^\w+ /,""):""}</div>`).join("")+`<div class=cl>${LABN}D</div>`+
+    rows.map(([t,cs])=>`<div class=rl data-t="${t}">${t}</div>`+cs.map((v,i)=>`<div class=c data-t="${t}" data-i="${i}" style="background:${col(v)}" title="${t} ${fmtDate(ds[i])} ${p(v)}"></div>`).join("")+`<div class=rv style="color:${cs[cs.length-1]>=0?"var(--pos)":"var(--neg)"}">${p(cs[cs.length-1])}</div>`).join("");
+  $("lgmin").textContent="−"+(vmax*100).toFixed(0)+"%";$("lgmax").textContent="+"+(vmax*100).toFixed(0)+"%";
+  el.onclick=e=>{const c=e.target.closest(".c"),r=e.target.closest(".rl");if(r){showDetail(r.dataset.t);return}
+    el.querySelectorAll(".c.on").forEach(x=>x.classList.remove("on"));const old=el.querySelector(".hmtip");if(old)old.remove();
+    if(!c)return;c.classList.add("on");const t=c.dataset.t,i=+c.dataset.i,v=rows.find(r=>r[0]===t)[1][i];
+    const tip=document.createElement("div");tip.className="hmtip";tip.innerHTML=`${t} · ${fmtDate(ds[i])} · <b>${p(v)}</b>`;
+    tip.style.left=(c.offsetLeft+c.offsetWidth/2)+"px";tip.style.top=c.offsetTop+"px";el.appendChild(tip)}}
+// ---- Tabs
+const setTab=t=>{b.dataset.tab=t;store.set("tab",t);document.querySelectorAll("[data-tab]").forEach(x=>x.setAttribute("aria-selected",x.dataset.tab===t));if(t==="lab")renderLab()};
+document.querySelectorAll("[data-tab]").forEach(x=>x.onclick=()=>setTab(x.dataset.tab));
+setTab(store.get("tab","rank")==="lab"?"lab":"rank");
 const setOpen=o=>{b.classList.toggle("open",o);$("gear").setAttribute("aria-expanded",o);
   if(o)document.documentElement.style.setProperty("--sheet-h",$("sheet").offsetHeight+"px")};
 const close=()=>setOpen(false);
@@ -524,7 +571,6 @@ let cur=null,hz=store.get("hz","1D");if(!(hz in HZ))hz="1D";
 const money=v=>v>=1000?v.toLocaleString(undefined,{maximumFractionDigits:2}):v.toFixed(2);
 const pct=v=>(v>=0?"+":"−")+Math.abs(v*100).toFixed(2)+"%";
 const sgnMoney=v=>(v>=0?"+":"−")+money(Math.abs(v));
-const fmtDate=d=>{const [y,m,dd]=d.split("-");return new Date(+y,m-1,+dd).toLocaleDateString(undefined,{month:"short",day:"numeric"})};
 const barTime=i=>{const m=570+i*5,h=Math.floor(m/60),mm=m%60;return`${(h+11)%12+1}:${String(mm).padStart(2,"0")}`};
 function series(t){  // -> {xs:[label...], ys:[price|null...], ref, refLabel, n(total slots)}
   const p=PX[t];if(!p)return null;
@@ -597,11 +643,17 @@ def render_html(prices, caps, as_of, meta=None, dates=None, intra=None):
 <header><div><h1>Return Ranker</h1><p class=sum id=sum></p><p class=asof id=asof></p></div><div class=hbtns>
 <button class=gear id=refresh aria-label="Refresh prices" title="Refresh prices">{REFRESH}</button>
 <button class=gear id=gear aria-label=Settings aria-expanded=false aria-controls=sheet>{GEAR}</button></div></header>
-<table id=tbl><thead><tr><th>Ticker</th><th id=colth class=num><button class=sortb id=colbtn aria-haspopup=menu aria-expanded=false aria-controls=dispmenu
+<div id=ranktab><table id=tbl><thead><tr><th>Ticker</th><th id=colth class=num><button class=sortb id=colbtn aria-haspopup=menu aria-expanded=false aria-controls=dispmenu
  title="Tap to sort, long-press to change display" data-dir=""><span id=col>Ann. Log Return</span>{SORT}</button>
 <div class=menu id=dispmenu role=menu aria-label=Display hidden><button role=menuitemradio data-disp=raw>Raw</button><button role=menuitemradio data-disp=z>Z-score</button><button role=menuitemradio data-disp=pct>Percentile</button><button role=menuitemradio data-disp=rank>Rank</button></div></th>
 <th id=tday class=num hidden><button class=sortb id=sortday data-dir="" aria-label="Sort by today's change" title="Tap to sort, long-press for 5-day"><span id=daylbl>Today</span>{SORT}</button></th></tr></thead><tbody id=rows></tbody></table>
+</div>
+<section id=lab aria-label=Lab><div class=labh><h2>21D cumulative log return</h2><p id=labsub></p></div>
+<div class=hm id=hm></div>
+<div class=lg><span id=lgmin></span><span class=bar></span><span id=lgmax></span></div>
+<p class=dnote>Each cell is the log return from the close 21 sessions ago to that day's close (the latest price for today); the right column is the full 21-day figure. Colour saturates at the 95th percentile of the grid. Tap a cell for the value, a ticker for its chart.</p></section>
 </main>
+<nav class=tabs aria-label=Views><button data-tab=rank aria-selected=true><span class=ico>&#9776;</span>Rank</button><button data-tab=lab aria-selected=false><span class=ico>&#9879;</span>Lab</button></nav>
 <section class=detail id=detail role=dialog aria-modal=true aria-labelledby=dtick>
 <div class=dtop><button class=x id=dclose aria-label="Close">&#x2715;</button><div style="min-width:0"><p class=dtick id=dtick></p><p class=dname id=dname></p></div></div>
 <p class=dsec id=dsec></p>
