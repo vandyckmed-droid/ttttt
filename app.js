@@ -473,7 +473,7 @@ function renderDataSheet() {
   $('data-facts').innerHTML = [
     ['Prices through', `${fmtDate(a.session, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })} ${isIntraday() ? 'live ' + nyTime(a.ts) : 'close'}`],
     ['History', `${T} sessions · ${state.model.stocks.length} of ${state.universe.stocks.length} stocks`],
-    ['Adjustments', `dividends and splits through ${fmtDate(a.reconciled || a.session, { month: 'short', day: 'numeric' })}`],
+    ['Adjusted through', fmtDate(a.reconciled || a.session, { month: 'short', day: 'numeric' })],
     ['Last refresh', a.refreshedAt ? `${ago(a.refreshedAt)} · ${a.requests} requests` : 'never (bundled data)'],
     ['FMP key', key ? `saved · ${key.slice(0, 4)}…` : 'none'],
   ].map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('');
