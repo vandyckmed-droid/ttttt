@@ -412,11 +412,11 @@ function openDetail(t, push = true) {
 function navTo(dir) {
   const order = state.navOrder || [], i = order.indexOf(state.cur), j = i + dir;
   if (i < 0 || j < 0 || j >= order.length) return;
-  const t = order[j];
+  const t = order[j], body = $('d-body'), y = body.scrollTop;   // keep the scroll position: the pages share a layout, so the same card stays in view
   state.cur = t;
   renderDetail(t); renderDetailNav();
   history.replaceState({ ...(history.state || {}), t }, '', '#' + t);
-  $('d-body').scrollTop = 0;
+  body.scrollTop = y;
   if (MOTION) $('d-body').animate([{ opacity: 0, transform: `translateX(${dir * 24}px)` }, { opacity: 1, transform: 'none' }], { duration: 240, easing: EASE });
 }
 function renderDetailNav() {

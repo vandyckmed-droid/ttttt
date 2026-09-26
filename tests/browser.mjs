@@ -508,6 +508,11 @@ function mockFmp(page, { date = L, hh = 16, mm = 0, sessions = [], splits = {}, 
   await page.keyboard.press('ArrowLeft'); await page.waitForTimeout(300);
   check((await page.textContent('#d-ticker')) === prev, `arrow keys move to ${prev}`);
   check(/Rank history/.test(await page.textContent('.page-body')) && (await page.locator('.chart-wrap svg, .chart-wrap canvas').count()) > 0, 'the page re-renders fully for the new ticker');
+  await page.evaluate(() => { document.getElementById('d-body').scrollTop = 900; }); await page.waitForTimeout(100);
+  await page.click('#d-next'); await page.waitForTimeout(300);
+  const kept = await page.evaluate(() => document.getElementById('d-body').scrollTop);
+  check(Math.abs(kept - 900) < 4, `next keeps the scroll position for side-by-side comparison (${kept})`);
+  await page.evaluate(() => { document.getElementById('d-body').scrollTop = 0; });
   await page.click('#d-back'); await page.waitForTimeout(300);
   await page.click(`.list .row[data-t="${full[0].t}"]`); await page.waitForSelector('#detail.on');
   check((await page.locator('#d-prev').isDisabled()) && !(await page.locator('#d-next').isDisabled()), 'previous is disabled on the first name');
