@@ -370,11 +370,21 @@ function mockFmp(page, { date = L, hh = 16, mm = 0, sessions = [], splits = {}, 
   await page.click('#d-back'); await page.waitForTimeout(300);
   check(page.url().startsWith(BASE) && !page.url().includes('#') && !(await page.locator('#detail').evaluate(e => e.classList.contains('on'))), `deep-linked detail closes in place (${page.url()})`);
   await page.waitForSelector('.list:not(.skeleton) .row');
-  await page.click('#btn-settings'); await page.waitForTimeout(350);
-  check(await page.evaluate(() => document.activeElement && document.activeElement.hasAttribute('data-close')), 'settings sheet takes focus');
-  check(await page.evaluate(() => document.getElementById('app').inert === true), 'main content is inert behind the sheet');
+  await page.click('#status'); await page.waitForTimeout(350);
+  check(await page.evaluate(() => document.activeElement && document.activeElement.hasAttribute('data-close')), 'data sheet takes focus');
+  check(await page.evaluate(() => document.getElementById('app').inert === true), 'main content is inert behind the modal data sheet');
   await page.keyboard.press('Escape'); await page.waitForTimeout(300);
-  check(await page.evaluate(() => document.activeElement && document.activeElement.id === 'btn-settings' && document.getElementById('app').inert === false), 'focus returns to the settings button on close');
+  check(await page.evaluate(() => document.activeElement && document.activeElement.id === 'status' && document.getElementById('app').inert === false), 'focus returns to the status button on close');
+  // the settings panel is compact and non-modal: the list stays visible and usable
+  await page.click('#btn-settings'); await page.waitForTimeout(400);
+  const peek = await page.evaluate(() => { const sh = document.getElementById('sheet-settings').getBoundingClientRect(); const row = document.querySelector('.list .row').getBoundingClientRect();
+    return { covers: sh.height / innerHeight, rowVisible: row.bottom < sh.top, inert: document.getElementById('app').inert, backdrop: document.getElementById('backdrop').hidden }; });
+  check(peek.covers <= 0.53 && peek.rowVisible && !peek.inert && peek.backdrop, `settings panel leaves the list visible (${Math.round(peek.covers * 100)}% of the screen, no dim)`);
+  await page.click('[data-flag="vol"]'); await page.waitForTimeout(500);
+  check((await page.locator('.list .row').first().isVisible()), 'rows stay visible while toggling');
+  await page.locator('.list .row').first().click(); await page.waitForSelector('#detail.on');
+  check(await page.evaluate(() => document.getElementById('sheet-settings').hidden), 'opening a ticker closes the settings panel');
+  await page.click('#d-back'); await page.waitForTimeout(300);
   check(log.errors.length === 0, `console clean: ${JSON.stringify(log.errors)}`);
   await ctx.close();
 }

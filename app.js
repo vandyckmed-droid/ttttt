@@ -315,6 +315,7 @@ function animateRows(list, before, animate) {
 // ---- detail page -----------------------------------------------------------------
 function openDetail(t, push = true) {
   if (!state.model.byTicker.has(t)) return;
+  if (openSheetId) closeSheet();
   if (!state.cur) state.detailFocus = document.activeElement;
   state.cur = t;
   renderDetail(t);
@@ -512,15 +513,25 @@ function drawScatter(t) {
 
 // ---- sheets -----------------------------------------------------------------------
 let openSheetId = null;
+// The settings sheet is a compact, non-modal panel: the list stays visible and
+// scrollable above it so the re-ranking can be watched while toggling. The data
+// sheet is modal.
 function openSheet(id) {
   closeSheet();
   openSheetId = id;
+  const peek = id === 'sheet-settings';
   state.sheetFocus = document.activeElement;
-  $('backdrop').hidden = false; $(id).hidden = false; $(id).style.transform = '';
+  $(id).hidden = false; $(id).style.transform = '';
   requestAnimationFrame(() => $(id).classList.add('on'));
-  document.body.classList.add('locked');
-  $('app').inert = true; $('detail').inert = true;
-  if (id === 'sheet-settings') renderSettings(); else renderDataSheet();
+  if (peek) {
+    document.documentElement.style.setProperty('--sheet-h', `${$(id).offsetHeight}px`);
+    $('app').classList.add('peek');
+  } else {
+    $('backdrop').hidden = false;
+    document.body.classList.add('locked');
+    $('app').inert = true; $('detail').inert = true;
+  }
+  if (peek) renderSettings(); else renderDataSheet();
   layoutPills($(id));
   $(id).querySelector('[data-close]').focus({ preventScroll: true });
 }
@@ -528,6 +539,7 @@ function closeSheet() {
   if (!openSheetId) return;
   const el = $(openSheetId); openSheetId = null;
   el.classList.remove('on'); el.hidden = true; el.style.transform = ''; $('backdrop').hidden = true;
+  $('app').classList.remove('peek');
   $('detail').inert = false; $('app').inert = !!state.cur;
   if (!state.cur) document.body.classList.remove('locked');
   if (state.sheetFocus && state.sheetFocus.focus) state.sheetFocus.focus({ preventScroll: true });
@@ -821,6 +833,12 @@ function wire() {
   $('btn-refresh').onclick = () => refresh();
   $('do-refresh').onclick = () => refresh();
   $('backdrop').onclick = closeSheet;
+  // A tap outside the compact settings panel closes it (scrolling the list does not).
+  document.addEventListener('click', e => {
+    if (openSheetId !== 'sheet-settings') return;
+    if (e.target.closest('#sheet-settings, #btn-settings, #chips')) return;
+    closeSheet();
+  });
   document.querySelectorAll('[data-close]').forEach(b => b.onclick = closeSheet);
   document.querySelectorAll('[data-window]').forEach(b => b.onclick = () => setSettings({ window: b.dataset.window }));
   document.querySelectorAll('[data-display]').forEach(b => b.onclick = () => setSettings({ display: b.dataset.display }));
