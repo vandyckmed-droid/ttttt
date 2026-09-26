@@ -132,16 +132,18 @@ def load_sp400():
 
 
 def load_universe():
-    """S&P 500 (FMP) plus S&P MidCap 400 (Wikipedia) constituents, ordered by
-    market cap, largest first. Each entry carries index "500" or "400"; a
-    ticker in both lists counts as 500."""
+    """S&P 500 (FMP) plus S&P MidCap 400 (Wikipedia) constituents with their
+    latest quote (price, timestamp, marketCap), ordered by market cap, largest
+    first. Each entry carries index "500" or "400"; a ticker in both lists
+    counts as 500."""
     info = {c["symbol"]: {"name": c.get("name", ""), "sector": c.get("sector", ""), "industry": c.get("subSector", ""),
                           "index": "500"} for c in fmp("sp500-constituent")}
     for c in load_sp400():
         info.setdefault(c["symbol"], {"name": c["name"], "sector": c["sector"], "industry": c["industry"], "index": "400"})
     quotes = batch_quotes(list(info))
     ranked = sorted(quotes.values(), key=lambda q: q.get("marketCap") or 0, reverse=True)
-    return [{"symbol": q["symbol"], "marketCap": q["marketCap"] or 0, **info[q["symbol"]]} for q in ranked]
+    return [{"symbol": q["symbol"], "marketCap": q["marketCap"] or 0, "price": q["price"], "timestamp": q["timestamp"],
+             **info[q["symbol"]]} for q in ranked]
 
 
 def cap_bucket(market_cap):
@@ -164,10 +166,6 @@ def load_history(symbol):
         w.writerow(["date", "close"])
         w.writerows(rows)
     return rows
-
-
-def load_quotes(symbols):
-    return {s: {"price": q["price"], "timestamp": q["timestamp"]} for s, q in batch_quotes(symbols).items()}
 
 
 def price_series(history, quote):
@@ -287,14 +285,14 @@ def load_prices():
     for m in meta.values():
         m["group"], m["sector"] = classify(m["sector"], m["industry"])
     print_taxonomy_report(meta)
+    quotes = {u["symbol"]: {"price": u["price"], "timestamp": u["timestamp"]} for u in universe}
     symbols = list(caps)
     with ThreadPoolExecutor(max_workers=8) as ex:
         histories = dict(zip(symbols, ex.map(load_history, symbols)))
-    quotes = load_quotes(symbols)
 
     out, dates = {}, []
     for s in symbols:
-        if s not in quotes or not histories[s]:
+        if not histories[s]:
             continue
         series = price_series(histories[s], quotes[s])[-(LOOKBACK + 1):]
         if len(series) < 2:
