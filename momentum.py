@@ -14,9 +14,8 @@ instead (annualized by 252/126, or 252/105 with skip); --window blend --w6 W ble
 the two: W * score_6m + (1 - W) * score_12m.
 
 Data is stored under data/:
-    data/universe.json        all constituents, ordered by market cap
     data/history/<SYM>.csv    daily closes (date,close), ascending
-    data/quotes.json          latest quote per symbol (kept separate from history)
+    data/sp400.json           cached S&P 400 constituent list
 
 Usage:  FMP_API_KEY=... python3 momentum.py [--caps mega,large,mid,small] [--window 12m|6m|blend [--w6 0.5]] [--skip] [--vol] [--html index.html]
 """
@@ -132,19 +131,17 @@ def load_sp400():
         return json.loads(path.read_text()) if path.exists() else []
 
 
-def load_universe(top=None):
+def load_universe():
     """S&P 500 (FMP) plus S&P MidCap 400 (Wikipedia) constituents, ordered by
-    market cap, largest first (optionally top N). Each entry carries index
-    "500" or "400"; a ticker in both lists counts as 500."""
+    market cap, largest first. Each entry carries index "500" or "400"; a
+    ticker in both lists counts as 500."""
     info = {c["symbol"]: {"name": c.get("name", ""), "sector": c.get("sector", ""), "industry": c.get("subSector", ""),
                           "index": "500"} for c in fmp("sp500-constituent")}
     for c in load_sp400():
         info.setdefault(c["symbol"], {"name": c["name"], "sector": c["sector"], "industry": c["industry"], "index": "400"})
     quotes = batch_quotes(list(info))
     ranked = sorted(quotes.values(), key=lambda q: q.get("marketCap") or 0, reverse=True)
-    universe = [{"symbol": q["symbol"], "marketCap": q["marketCap"] or 0, **info[q["symbol"]]} for q in ranked[:top]]
-    (DATA / "universe.json").write_text(json.dumps(universe, indent=2))
-    return universe
+    return [{"symbol": q["symbol"], "marketCap": q["marketCap"] or 0, **info[q["symbol"]]} for q in ranked]
 
 
 def cap_bucket(market_cap):
@@ -170,12 +167,7 @@ def load_history(symbol):
 
 
 def load_quotes(symbols):
-    quotes = {
-        s: {"price": q["price"], "timestamp": q["timestamp"]}
-        for s, q in batch_quotes(symbols).items()
-    }
-    (DATA / "quotes.json").write_text(json.dumps(quotes, indent=2))
-    return quotes
+    return {s: {"price": q["price"], "timestamp": q["timestamp"]} for s, q in batch_quotes(symbols).items()}
 
 
 def price_series(history, quote):
@@ -284,19 +276,12 @@ def winsorize(values, p=WINSOR):
     return [min(max(v, lo), hi) for v in values]
 
 
-def load_returns(top=None):
-    """{ticker: up to 252 most recent daily log returns ending at P_now}, in
-    market-cap order (largest first). Tickers with shorter history keep what they
-    have and are left out of any window longer than that."""
-    return {s: daily_log_returns(p, len(p) - 1) for s, p in load_prices(top)[0].items()}
-
-
-def load_prices(top=None):
+def load_prices():
     """({ticker: up to 253 most recent prices ending at P_now}, {ticker: market cap},
     {ticker: {name, sector, industry}}, [the 253 session dates those prices sit on]),
     all in market-cap order. Every ticker's prices align to the tail of the dates."""
     (DATA / "history").mkdir(parents=True, exist_ok=True)
-    universe = load_universe(top)
+    universe = load_universe()
     caps = {u["symbol"]: u["marketCap"] for u in universe}
     meta = {u["symbol"]: {k: u[k] for k in ("name", "sector", "industry", "index")} for u in universe}
     for m in meta.values():
@@ -377,7 +362,6 @@ CSS = f"""
 body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.4 -apple-system,BlinkMacSystemFont,"Inter","Segoe UI",system-ui,sans-serif}
 main{max-width:560px;margin:0 auto;padding:12px 16px 24px}
 .open main{padding-bottom:calc(var(--sheet-h,50vh) + 16px)}  /* keep the content scrollable above the sheet */
-/* Bottom tab bar: Rank (the list) and Lab (experiments) */
 header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:4px 0 12px}
 h1{font-size:22px;font-weight:700;letter-spacing:-.01em;margin:0}
 .gear{flex:none;width:40px;height:40px;border:0;border-radius:12px;background:var(--chip);color:var(--fg);cursor:pointer;display:grid;place-items:center}
@@ -475,7 +459,6 @@ tbody tr[data-t]{cursor:pointer}tbody tr[data-t]:active td{background:var(--chip
 # in market-cap order; daily log returns are derived exactly as daily_log_returns().
 JS = """
 const $=id=>document.getElementById(id),b=document.body;
-// [ticker, cap bucket, daily log returns, change of the latest price vs the prior close]
 // [ticker, cap bucket, daily log returns, {d1: latest change vs prior close,
 //  d5: 5-trading-day log return ln(P_now / P_5 sessions ago)}]
 let DATA,META,DATES,INTRA,R,PX={};
@@ -880,11 +863,10 @@ def render_html(prices, caps, as_of, meta=None, dates=None, intra=None):
 <header><div><h1>Return Ranker</h1><p class=sum id=sum></p><p class=asof id=asof></p></div><div class=hbtns>
 <button class=gear id=refresh aria-label="Refresh prices" title="Refresh prices">{REFRESH}</button>
 <button class=gear id=gear aria-label=Settings aria-expanded=false aria-controls=sheet>{GEAR}</button></div></header>
-<div id=ranktab><table id=tbl><thead><tr><th>Ticker</th><th id=colth class=num><button class=sortb id=colbtn aria-haspopup=menu aria-expanded=false aria-controls=dispmenu
+<table id=tbl><thead><tr><th>Ticker</th><th id=colth class=num><button class=sortb id=colbtn aria-haspopup=menu aria-expanded=false aria-controls=dispmenu
  title="Tap to sort, long-press to change display" data-dir=""><span id=col>Ann. Log Return</span>{SORT}</button>
 <div class=menu id=dispmenu role=menu aria-label=Display hidden><button role=menuitemradio data-disp=raw>Raw</button><button role=menuitemradio data-disp=z>Z-score</button><button role=menuitemradio data-disp=pct>Percentile</button><button role=menuitemradio data-disp=rank>Rank</button></div></th>
 <th id=tday class=num hidden><button class=sortb id=sortday data-dir="" aria-label="Sort by today's change" title="Tap to sort, long-press for 5-day"><span id=daylbl>Today</span>{SORT}</button></th></tr></thead><tbody id=rows></tbody></table>
-</div>
 <section class=detail id=detail role=dialog aria-modal=true aria-labelledby=dtick>
 <div class=dtop><button class=x id=dclose aria-label="Close">&#x2715;</button><div style="min-width:0"><p class=dtick id=dtick></p><p class=dname id=dname></p></div></div>
 <p class=dsec id=dsec></p>
