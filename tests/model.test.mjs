@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   MODEL, decodePrices, encodePrices, logReturns, aggregate, looBenchmark, ols,
-  buildModel, momentum, windowScore, scoreStock, rankPool, winsorize, zscores, excludeReason,
+  buildModel, momentum, windowScore, scoreStock, rankPool, winsorize, zscores, excludeReason, ols2, activeFit,
 } from '../model.js';
 
 const close = (a, b, eps = 1e-9) => assert.ok(Math.abs(a - b) < eps, `${a} != ${b}`);
@@ -268,4 +268,57 @@ test('session gate: one missing print in a 9-name group keeps the benchmark (MIN
   assert.ok(Number.isNaN(strict.fits.get('A').bench[T - 3]));
   assert.equal(rankPool(strict, names, { window: '12m', skip: false, residual: true, vol: false, r2: false }).rows.length, 0);
   assert.match(excludeReason(strict, 'A', { window: '12m', skip: false, residual: true, vol: false, r2: false }), /benchmark unavailable on 2 sessions/);
+});
+
+test('ols2: exact plane, textbook two-regressor formulas, residual sd; collinear factors are rejected', () => {
+  const x1 = Float64Array.from([NaN, 1, 2, 3, 4, 5, 6]), x2 = Float64Array.from([NaN, 2, 1, 4, 3, 6, 5]);
+  const y = Float64Array.from(x1, (v, k) => k ? 1 + 2 * v - 3 * x2[k] : NaN);
+  const f = ols2(x1, x2, y, 1, 6);
+  assert.equal(f.n, 6); close(f.beta[0], 2); close(f.beta[1], -3); close(f.alpha, 1); close(f.r2, 1); close(f.resid, 0);
+  // noisy case against an independent least-squares solve (normal equations with intercept)
+  const yn = Float64Array.from([NaN, 1.2, -0.3, 2.9, 0.4, 3.1, 1.8]);
+  const g = ols2(x1, x2, yn, 1, 6);
+  const X = [1, 2, 3, 4, 5, 6].map((v, i) => [1, v, x2[i + 1]]), Y = Array.from(yn.slice(1));
+  const XtX = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], XtY = [0, 0, 0];
+  for (let i = 0; i < 6; i++) for (let a = 0; a < 3; a++) { XtY[a] += X[i][a] * Y[i]; for (let b = 0; b < 3; b++) XtX[a][b] += X[i][a] * X[i][b]; }
+  const solve = (A, B) => { const M = A.map((r, i) => [...r, B[i]]); for (let c = 0; c < 3; c++) { const p = M[c][c]; for (let j = c; j < 4; j++) M[c][j] /= p; for (let r = 0; r < 3; r++) if (r !== c) { const f = M[r][c]; for (let j = c; j < 4; j++) M[r][j] -= f * M[c][j]; } } return M.map(r => r[3]); };
+  const [a, b1, b2] = solve(XtX, XtY);
+  close(g.alpha, a); close(g.beta[0], b1); close(g.beta[1], b2);
+  const fitted = X.map(r => a + b1 * r[1] + b2 * r[2]), my = Y.reduce((s, v) => s + v, 0) / 6;
+  const sse = Y.reduce((s, v, i) => s + (v - fitted[i]) ** 2, 0), sst = Y.reduce((s, v) => s + (v - my) ** 2, 0);
+  close(g.r2, 1 - sse / sst); close(g.resid, Math.sqrt(sse / 3));
+  const h = ols2(x1, Float64Array.from(x1, v => 2 * v), yn, 1, 6);
+  assert.ok(Number.isNaN(h.beta[0]) && Number.isNaN(h.r2), 'collinear regressors are not identifiable');
+  assert.ok(ols(x1, yn, 1, 6).resid > 0, 'one-factor fit reports a residual sd');
+});
+
+test('two-factor benchmark: peer + market fit, residual momentum removes both, falls back cleanly', () => {
+  const T = 40;
+  const stocks = [...'ABCDE'.split('').map(t => ({ t, n: t, i: '500', s: 'Tech', g: 'Chips' })), ...'FGHIJ'.split('').map(t => ({ t, n: t, i: '400', s: 'Energy', g: 'Oil' }))];
+  const prices = Object.fromEntries(stocks.map((s, i) => [s.t, walk(60 + i, T, (i % 3) * 0.002)]));
+  const model = buildModel({ stocks }, fixture({ T, stocks, prices }).history, SMALL);
+  const one = model.fits.get('A'), two = one.two;
+  assert.equal(two.factors, 2); assert.equal(two.level, 'peer'); assert.equal(two.name, 'Chips');
+  // reproduces ols2 on the same series
+  const ref = ols2(one.bench, two.mkt, model.ret.get('A'), 1, T - 1);
+  close(two.beta[0], ref.beta[0]); close(two.beta[1], ref.beta[1]); close(two.r2, ref.r2); assert.equal(two.n, ref.n);
+  // the market factor is the S&P 900 leave-one-out benchmark
+  const rA = model.ret.get('A');
+  const others = stocks.filter(s => s.t !== 'A').map(s => model.ret.get(s.t));
+  for (let k = 1; k < T; k++) close(two.mkt[k], others.reduce((s, r) => s + r[k], 0) / others.length);
+  // settings switch between the fits and the residual uses both betas over the same sessions
+  const base = { window: '12m', skip: false, residual: true, vol: false, r2: false };
+  assert.equal(activeFit(model, 'A', { ...base, factors: 'one' }), one);
+  assert.equal(activeFit(model, 'A', { ...base, factors: 'two' }), two);
+  let stock = 0, bsum = 0, msum = 0;
+  for (let k = T - 6; k <= T - 1; k++) { stock += rA[k]; bsum += one.bench[k]; msum += two.mkt[k]; }
+  close(scoreStock(model, 'A', { ...base, factors: 'two' }).score, (stock - two.beta[0] * bsum - two.beta[1] * msum) * 252 / 6);
+  close(scoreStock(model, 'A', { ...base, factors: 'one' }).score, (stock - one.beta * bsum) * 252 / 6);
+  // R^2 multiplier uses the active regression's R^2
+  const raw = scoreStock(model, 'A', { ...base, residual: false, factors: 'two' }).score;
+  close(scoreStock(model, 'A', { ...base, residual: false, r2: true, factors: 'two' }).score, raw * two.r2);
+  // a name whose only viable benchmark is the universe keeps a one-factor fit under 'two'
+  const lonely = [{ t: 'Z', n: 'Z', i: '400', s: 'Solo', g: 'Me' }];
+  const m2 = buildModel({ stocks: [...stocks, ...lonely] }, fixture({ T, stocks: [...stocks, ...lonely], prices: { ...prices, Z: walk(99, T) } }).history, SMALL);
+  assert.equal(m2.fits.get('Z').level, 'universe'); assert.equal(m2.fits.get('Z').two.factors, 1); assert.equal(m2.fits.get('Z').two.level, 'universe');
 });

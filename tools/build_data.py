@@ -7,15 +7,19 @@
 
 universe: S&P 500 constituents (FMP) plus S&P MidCap 400 (Wikipedia list), each
           resolved through tools/taxonomy.py to a sector and peer group.
-history:  ~3 years of daily closes per ticker, aligned to one session calendar,
-          stored compactly (integer cents, delta-coded). The app extends this
-          seed incrementally in the browser when the user presses Refresh.
+history:  ~3 years of daily dividend- and split-adjusted closes per ticker (so
+          momentum is total return), aligned to one session calendar, stored
+          compactly (integer cents, delta-coded). The latest value equals the
+          actual close. The app extends this seed incrementally in the browser
+          when the user presses Refresh and rescales past values when FMP's
+          adjusted series says a dividend or split has occurred since.
 
 Raw per-symbol downloads are cached in .cache/history/ so a re-encode does not
 re-download. Python 3.9+, standard library only.
 """
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -33,7 +37,7 @@ from taxonomy import classify  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data"
-CACHE = ROOT / ".cache" / "history"
+CACHE = ROOT / ".cache" / "adjusted"
 BASE = "https://financialmodelingprep.com/stable"
 SP400_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_400_companies"
 NY = ZoneInfo("America/New_York")
@@ -107,12 +111,33 @@ def load_sp400():
     return rows
 
 
+def drop_secondary_share_classes(stocks):
+    """A company listed with two share classes (GOOG/GOOGL, FOX/FOXA, NWS/NWSA) keeps
+    only its most traded class, so it does not count twice in every equal-weight
+    benchmark. Classes are detected by an identical company name; volume comes
+    from one batch-quote call."""
+    by_name = {}
+    for sym, m in stocks.items():
+        by_name.setdefault(re.sub(r"\s*\(class [a-z]\)\s*$", "", m["name"].strip().lower()), []).append(sym)
+    dupes = [syms for syms in by_name.values() if len(syms) > 1]
+    if not dupes:
+        return
+    volume = {q["symbol"]: q.get("volume") or 0 for q in fmp("batch-quote", symbols=",".join(s for g in dupes for s in g))}
+    for syms in dupes:
+        keep = max(syms, key=lambda s: volume.get(s, 0))
+        for s in syms:
+            if s != keep:
+                print(f"  share class {s} dropped in favour of {keep} ({stocks[s]['name']})", file=sys.stderr)
+                del stocks[s]
+
+
 def build_universe():
     stocks = {}
     for c in fmp("sp500-constituent"):
         stocks[c["symbol"]] = {"name": c.get("name", ""), "sector": c.get("sector", ""), "industry": c.get("subSector", ""), "index": "500"}
     for c in load_sp400():
         stocks.setdefault(c["symbol"], {"name": c["name"], "sector": c["sector"], "industry": c["industry"], "index": "400"})
+    drop_secondary_share_classes(stocks)
     out, unmapped, by_group = [], Counter(), Counter()
     for sym in sorted(stocks):
         m = stocks[sym]
@@ -139,12 +164,12 @@ def build_universe():
 # ---- history ----------------------------------------------------------------
 
 def fetch_history(symbol, start):
-    """{date: close} for one symbol from `start`, cached on disk."""
+    """{date: dividend- and split-adjusted close} for one symbol from `start`, cached on disk."""
     path = CACHE / f"{symbol}.json"
     if path.exists():
         return json.loads(path.read_text())
-    rows = fmp("historical-price-eod/light", symbol=symbol, **{"from": start})
-    out = {r["date"]: r["price"] for r in rows if r.get("price")}
+    rows = fmp("historical-price-eod/dividend-adjusted", symbol=symbol, **{"from": start})
+    out = {r["date"]: r["adjClose"] for r in rows if r.get("adjClose")}
     path.write_text(json.dumps(out))
     return out
 

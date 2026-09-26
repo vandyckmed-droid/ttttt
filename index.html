@@ -96,8 +96,15 @@
       <div class="opt-text"><span class="opt-name">Residual momentum</span><span class="opt-desc">Subtract β × the leave-one-out peer benchmark (peer group → sector → S&amp;P 900) over the same sessions.</span></div>
       <input type="checkbox" role="switch" class="switch" data-flag="residual">
     </label>
+    <div class="opt">
+      <div class="opt-text"><span class="opt-name">Regression</span><span class="opt-desc">One factor: the most specific viable benchmark. Two factors: that benchmark and the S&amp;P 900 market, fitted jointly, so the residual strips both. Sets the β and R² used above.</span></div>
+      <div class="seg" role="group" aria-label="Regression factors">
+        <button type="button" data-factors="one">1 factor</button>
+        <button type="button" data-factors="two">2 factors</button>
+      </div>
+    </div>
     <label class="opt row">
-      <div class="opt-text"><span class="opt-name">Volatility adjusted</span><span class="opt-desc">Divide by the annualized realized volatility of the same daily series.</span></div>
+      <div class="opt-text"><span class="opt-name">Volatility adjusted</span><span class="opt-desc">Divide by the annualized realized volatility of the same daily series (the residual series when Residual is on).</span></div>
       <input type="checkbox" role="switch" class="switch" data-flag="vol">
     </label>
     <label class="opt row">

@@ -57,13 +57,13 @@ const rows = page => page.locator('.list .row').evaluateAll(els => els.map(e => 
 const noOverflow = page => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1);
 
 /** Mock FMP for a scenario: quote session date/time, optional history gap dates, optional error mode. */
-function mockFmp(page, { date = L, hh = 16, mm = 0, sessions = [], splits = {}, mode = 'ok', keySeen }) {
+function mockFmp(page, { date = L, hh = 16, mm = 0, sessions = [], splits = {}, divs = {}, exDate = '9999', mode = 'ok', keySeen }) {
   const calls = { quote: 0, history: 0, historyFrom: {}, hist429: 0 };
   return page.route('https://financialmodelingprep.com/**', route => {
     const u = new URL(route.request().url());
     if (keySeen) keySeen.push(u.searchParams.get('apikey'));
     if (mode === '401') return route.fulfill({ status: 401, body: '{"Error Message":"Invalid API KEY"}' });
-    if (mode === '401hist' && u.pathname.endsWith('/historical-price-eod/light') && u.searchParams.get('symbol') === 'A') { calls.history++; return route.fulfill({ status: 401, body: '{}' }); }
+    if (mode === '401hist' && u.pathname.endsWith('/dividend-adjusted') && u.searchParams.get('symbol') === 'A') { calls.history++; return route.fulfill({ status: 401, body: '{}' }); }
     if (mode === 'abort') return route.abort('failed');
     if (mode === '429once' && calls.hist429 === 0) { calls.hist429++; return route.fulfill({ status: 429, body: 'Limit Reach' }); }
     if (u.pathname.endsWith('/batch-quote')) {
@@ -71,13 +71,18 @@ function mockFmp(page, { date = L, hh = 16, mm = 0, sessions = [], splits = {}, 
       const syms = u.searchParams.get('symbols').split(',');
       return route.fulfill({ json: syms.map(s => ({ symbol: s, price: +((lastClose[s] || 50) * (splits[s] || 1.01)).toFixed(2), previousClose: +((lastClose[s] || 50) * (splits[s] || 1)).toFixed(2), timestamp: nyTs(date, hh, mm) })) });
     }
-    if (u.pathname.endsWith('/historical-price-eod/light')) {
+    // Daily history: 'light' (calendar references) or 'dividend-adjusted' (per-name series). A
+    // name in `divs` went ex-dividend on `exDate`: every adjusted value before that date is scaled
+    // down by its factor. Sessions after the seed trade at 1.01 x the last close, like the quotes.
+    if (u.pathname.endsWith('/historical-price-eod/light') || u.pathname.endsWith('/dividend-adjusted')) {
       calls.history++;
+      const adj = u.pathname.endsWith('/dividend-adjusted');
       const s = u.searchParams.get('symbol'), from = u.searchParams.get('from'), to = u.searchParams.get('to') || '9999';
       calls.historyFrom[s] = from;
       const all = [...seed.dates, ...sessions].filter(d => d >= from && d <= to);
       const base = (lastClose[s] || 50) * (splits[s] || 1);
-      return route.fulfill({ json: all.map(d => ({ symbol: s, date: d, price: +(base * (1 + (d > L ? 0.002 : 0))).toFixed(2), volume: 1 })).reverse() });
+      const value = d => +(base * (d > L ? 1.01 : 1) * (adj && d < exDate ? (divs[s] || 1) : 1)).toFixed(2);
+      return route.fulfill({ json: all.map(d => adj ? { symbol: s, date: d, adjClose: value(d), volume: 1 } : { symbol: s, date: d, price: value(d), volume: 1 }).reverse() });
     }
     return route.fulfill({ status: 404, body: '[]' });
   }).then(() => calls);
@@ -165,16 +170,30 @@ function mockFmp(page, { date = L, hh = 16, mm = 0, sessions = [], splits = {}, 
     await page.click(`[data-hz="${h}"]`);
     check((await page.locator(`[data-hz="${h}"]`).getAttribute('aria-pressed')) === 'true' && /–/.test(await page.textContent('#hzl')), `horizon ${h}`);
   }
-  await page.click('#bench-toggle');
+  await page.click('[data-overlay="bench"]');
   check((await page.locator('#chart path.bl').count()) === 1, 'benchmark overlay drawn');
   await shot(page, 'detail-mu-bench');
+  await page.click('[data-overlay="resid"]');
+  check((await page.locator('#chart path.rl').count()) === 1, 'residual overlay drawn');
+  await shot(page, 'detail-mu-resid');
+  check((await page.locator('#scatter svg circle').count()) > 700, 'beta scatter drawn with the regression window');
+  check(/Idiosyncratic volatility/.test(await page.textContent('.page-body')), 'idiosyncratic volatility shown');
   await page.hover('#chart svg', { position: { x: 200, y: 100 } });
   check(!(await page.locator('#tip').isHidden()), 'hover readout');
   const reg = await page.textContent('.page-body');
   check(/Peer group benchmark/.test(reg) && /Semiconductors/.test(reg) && /Beta/.test(reg) && /R²/.test(reg) && /Observations/.test(reg), 'regression card: peer benchmark, beta, R², observations');
   check(/#\d+ of \d+/.test(reg) && /percentile/.test(reg), 'rank and percentile shown');
-  // sector fallback diagnostics
+  // two-factor regression
   await page.click('#d-back'); await page.waitForTimeout(350);
+  await page.click('#btn-settings'); await page.click('[data-factors="two"]'); await page.click('[data-flag="residual"]'); await page.click('#sheet-settings [data-close]'); await page.waitForTimeout(300);
+  check((await page.textContent('#chips')).includes('2-factor'), 'chip shows 2-factor');
+  await page.click('.list .row[data-t="MU"]'); await page.waitForSelector('#detail.on');
+  const two = await page.textContent('.page-body');
+  check(/\+ S&P 900/.test(two) && /Beta · Semiconductors/.test(two) && /Beta · S&P 900/.test(two) && /market /.test(two), 'two-factor detail shows both betas and the market term');
+  await shot(page, 'detail-mu-2f');
+  await page.click('#d-back'); await page.waitForTimeout(350);
+  await page.click('#btn-settings'); await page.click('#reset'); await page.click('#sheet-settings [data-close]'); await page.waitForTimeout(300);
+  // sector fallback diagnostics
   await page.fill('#search', 'VZ'); await page.click('.list .row[data-t="VZ"]'); await page.waitForSelector('#detail.on');
   const vz = await page.textContent('.page-body');
   check(/Sector benchmark · fallback/.test(vz) && /Peer group Telecom not used: only 5 other names/.test(vz), 'VZ falls back to the sector benchmark with the reason');
@@ -269,9 +288,15 @@ function mockFmp(page, { date = L, hh = 16, mm = 0, sessions = [], splits = {}, 
   check(Math.abs(mu.at(-2) - lastClose.MU) < 0.011, `Sep 28 corrected from intraday ${muIntraday} to the close ${mu.at(-2)}`);
   await page.unroute('https://financialmodelingprep.com/**');
   // a 3-session gap: per-name history for every ticker
-  const calls2 = await mockFmp(page, { date: '2026-10-02', hh: 16, mm: 0, sessions: ['2026-09-28', '2026-09-29', '2026-09-30', '2026-10-01', '2026-10-02'], splits: { AAPL: 0.25 } });
+  const vzBefore = decodePrices((await readStored()).px.VZ);
+  const calls2 = await mockFmp(page, { date: '2026-10-02', hh: 16, mm: 0, sessions: ['2026-09-28', '2026-09-29', '2026-09-30', '2026-10-01', '2026-10-02'], splits: { AAPL: 0.25 }, divs: { VZ: 0.98 }, exDate: '2026-09-30' });
   const toast2 = await afterToast(page, () => page.click('#btn-refresh'), '', 60000);
   check(/Oct 2 close/.test(toast2), `gap refresh: ${toast2}`);
+  const vzAfter = decodePrices((await readStored()).px.VZ);
+  check(Math.abs(vzAfter[0] / vzBefore[0] - 0.98) < 1e-3 && Math.abs(vzAfter[100] / vzBefore[100] - 0.98) < 1e-3, `dividend reconciliation rescales VZ's earlier history by 0.98 (${vzBefore[0]} -> ${vzAfter[0]})`);
+  check(Math.abs(vzAfter.at(-1) - lastClose.VZ * 1.01) < 0.011, 'latest VZ value is still the quote');
+  const mu2 = decodePrices((await readStored()).px.MU);
+  check(Math.abs(mu2[0] - decodePrices(seed.px.MU)[0]) < 1e-9, 'a name without a dividend is not rescaled');
   check(calls2.quote === QB && calls2.history === universe.stocks.length + 2, `gap refresh requests: ${calls2.quote} + ${calls2.history} (2 references + ${universe.stocks.length} names)`);
   check((await readStored()).dates.slice(-4).join(',') === '2026-09-29,2026-09-30,2026-10-01,2026-10-02', 'gap sessions inserted in order');
   check(Math.abs((await page.evaluate(() => document.querySelectorAll('.list .row').length)) - T0) < 10, 'ranking still covers the universe');

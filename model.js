@@ -3,9 +3,16 @@
 //
 // Pipeline for one stock (see scoreStock):
 //   daily log returns -> momentum window -> optional 21-session skip
-//   -> optional residual adjustment (beta x leave-one-out benchmark)
-//   -> optional division by realized volatility -> optional x R^2
+//   -> optional residual adjustment (beta x leave-one-out benchmark, or the
+//      two-factor peer + market version) -> optional division by the realized
+//      volatility of that same daily series -> optional x R^2
 //   -> cross-sectional display transform (raw / z / percentile / rank) -> rank.
+//
+// Every stock gets two regressions at build time, both over the same 3-year
+// window and the same leave-one-out benchmarks:
+//   'one':  r = a + b * bench            bench = peer group -> sector -> S&P 900 (first viable)
+//   'two':  r = a + b1 * bench + b2 * mkt  the same specific benchmark plus the S&P 900,
+//                                         so the residual strips market and industry together
 //
 // Sessions are indexed 0..T-1 over `dates`; a return r[k] covers session k-1 -> k,
 // so r[0] is undefined. Missing values are NaN throughout.
@@ -27,6 +34,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   window: 'blend',           // '6m' | '12m' | 'blend' (equal-weight 6m + 12m)
   skip: true,
   residual: false,
+  factors: 'one',            // 'one' (hierarchy benchmark) | 'two' (benchmark + S&P 900 market factor)
   vol: false,
   r2: false,
   display: 'raw',            // 'raw' | 'z' | 'pct' | 'rank'
@@ -103,22 +111,55 @@ export function looBenchmark(agg, self, minPeers = MODEL.MIN_SESSION_PEERS) {
   return b;
 }
 
-/** OLS of y on x over sessions [from, to], using pairs where both are valid. */
+/**
+ * OLS of y on x over sessions [from, to], using pairs where both are valid.
+ * Returns n, beta, alpha, r2 and resid (sample standard deviation of the daily residuals).
+ */
 export function ols(x, y, from, to) {
   let n = 0, sx = 0, sy = 0;
   for (let k = from; k <= to; k++) {
     const a = x[k], b = y[k];
     if (a === a && b === b) { n++; sx += a; sy += b; }
   }
-  if (n < 2) return { n, beta: NaN, alpha: NaN, r2: NaN };
+  if (n < 3) return { n, beta: NaN, alpha: NaN, r2: NaN, resid: NaN };
   const mx = sx / n, my = sy / n;
   let sxx = 0, syy = 0, sxy = 0;
   for (let k = from; k <= to; k++) {
     const a = x[k], b = y[k];
     if (a === a && b === b) { sxx += (a - mx) ** 2; syy += (b - my) ** 2; sxy += (a - mx) * (b - my); }
   }
-  const beta = sxx > 0 ? sxy / sxx : NaN;
-  return { n, beta, alpha: my - beta * mx, r2: sxx > 0 && syy > 0 ? (sxy * sxy) / (sxx * syy) : NaN };
+  if (!(sxx > 0)) return { n, beta: NaN, alpha: NaN, r2: NaN, resid: NaN };
+  const beta = sxy / sxx, sse = syy - beta * sxy;
+  return { n, beta, alpha: my - beta * mx, r2: syy > 0 ? (sxy * sxy) / (sxx * syy) : NaN, resid: Math.sqrt(Math.max(0, sse) / (n - 2)) };
+}
+
+/**
+ * Two-regressor OLS y = a + b1 x1 + b2 x2 over [from, to] (triples where all are
+ * valid), by the normal equations on centred data. Same return shape as ols with
+ * beta = [b1, b2].
+ */
+export function ols2(x1, x2, y, from, to) {
+  let n = 0, s1 = 0, s2 = 0, sy = 0;
+  for (let k = from; k <= to; k++) {
+    const a = x1[k], b = x2[k], c = y[k];
+    if (a === a && b === b && c === c) { n++; s1 += a; s2 += b; sy += c; }
+  }
+  const bad = { n, beta: [NaN, NaN], alpha: NaN, r2: NaN, resid: NaN };
+  if (n < 4) return bad;
+  const m1 = s1 / n, m2 = s2 / n, my = sy / n;
+  let s11 = 0, s22 = 0, s12 = 0, s1y = 0, s2y = 0, syy = 0;
+  for (let k = from; k <= to; k++) {
+    const a = x1[k], b = x2[k], c = y[k];
+    if (a === a && b === b && c === c) {
+      const d1 = a - m1, d2 = b - m2, dy = c - my;
+      s11 += d1 * d1; s22 += d2 * d2; s12 += d1 * d2; s1y += d1 * dy; s2y += d2 * dy; syy += dy * dy;
+    }
+  }
+  const det = s11 * s22 - s12 * s12;
+  if (!(det > 1e-18 * s11 * s22) || !(syy > 0)) return bad;      // collinear factors: not identifiable
+  const b1 = (s22 * s1y - s12 * s2y) / det, b2 = (s11 * s2y - s12 * s1y) / det;
+  const sse = syy - b1 * s1y - b2 * s2y;
+  return { n, beta: [b1, b2], alpha: my - b1 * m1 - b2 * m2, r2: 1 - sse / syy, resid: Math.sqrt(Math.max(0, sse) / (n - 3)) };
 }
 
 // ---- model -----------------------------------------------------------------
@@ -164,9 +205,25 @@ export function buildModel(universe, history, M = MODEL) {
       tried.push({ level, name, peers, n: reg.n, beta: reg.beta, alpha: reg.alpha, r2: reg.r2, ok, reason });
       if (ok && !fit) fit = { level, name, peers, ...reg, bench };
     }
-    fits.set(s.t, { ...(fit || { level: null, name: null, peers: 0, n: 0, beta: NaN, alpha: NaN, r2: NaN, bench: null }), tried });
+    const none = { level: null, name: null, peers: 0, n: 0, beta: NaN, alpha: NaN, r2: NaN, resid: NaN, bench: null };
+    // Two-factor: the same specific benchmark plus the S&P 900 market factor (when the
+    // specific one is not the market itself and both are viable).
+    let two = { ...none, mkt: null, factors: 1 };
+    if (fit && fit.level !== 'universe') {
+      const mkt = looBenchmark(agg.get('universe'), r, M.MIN_SESSION_PEERS);
+      const reg = ols2(fit.bench, mkt, r, from, to);
+      if (reg.n >= M.MIN_OBS && reg.beta[0] === reg.beta[0]) two = { level: fit.level, name: fit.name, peers: fit.peers, ...reg, bench: fit.bench, mkt, factors: 2 };
+      else two = { ...fit, mkt: null, factors: 1 };             // fall back to the one-factor fit
+    } else if (fit) two = { ...fit, mkt: null, factors: 1 };
+    fits.set(s.t, { ...(fit || none), tried, two });
   }
   return { M, dates, T, stocks, byTicker: new Map(stocks.map(s => [s.t, s])), px: history.px, ret, agg, fits };
+}
+
+/** The regression a stock is scored with under `settings` (one- or two-factor). */
+export function activeFit(model, t, settings) {
+  const f = model.fits.get(t);
+  return f && settings.factors === 'two' ? f.two : f;
 }
 
 // ---- scoring ---------------------------------------------------------------
@@ -180,12 +237,13 @@ export function buildModel(universe, history, M = MODEL) {
  *   signal: stock - beta * bench when residual, else stock
  *   sd:     sample standard deviation of the daily signal series
  */
-export function momentum(r, bench, beta, T, window, skip, residual) {
+export function momentum(r, bench, beta, T, window, skip, residual, mkt = null, beta2 = NaN) {
   const to = T - 1 - skip, from = T - window;
   const n = to - from + 1;
   if (from < 1 || n < 2) return null;
   if (residual && !(beta === beta && bench)) return null;
-  let stock = 0, bsum = 0, s2 = 0;
+  const twoF = residual && mkt && beta2 === beta2;
+  let stock = 0, bsum = 0, msum = 0, s2 = 0;
   const xs = new Float64Array(n);
   for (let k = from, j = 0; k <= to; k++, j++) {
     const v = r[k];
@@ -195,12 +253,13 @@ export function momentum(r, bench, beta, T, window, skip, residual) {
       const b = bench[k];
       if (b !== b) return null;
       bsum += b; x = v - beta * b;
+      if (twoF) { const m = mkt[k]; if (m !== m) return null; msum += m; x -= beta2 * m; }
     }
     stock += v; xs[j] = x;
   }
-  const signal = residual ? stock - beta * bsum : stock, mean = signal / n;
+  const signal = residual ? stock - beta * bsum - (twoF ? beta2 * msum : 0) : stock, mean = signal / n;
   for (let j = 0; j < n; j++) s2 += (xs[j] - mean) ** 2;
-  return { n, stock, bench: residual ? bsum : NaN, signal, sd: Math.sqrt(s2 / (n - 1)) };
+  return { n, stock, bench: residual ? bsum : NaN, mkt: twoF ? msum : NaN, signal, sd: Math.sqrt(s2 / (n - 1)) };
 }
 
 /** Annualized score of one window: signal x 252/N, / (sd x sqrt 252) when vol, x R^2 when r2. */
@@ -226,12 +285,13 @@ function windowsFor(settings) {
  * when residual / R^2 is on). A blend is the equal-weight mean of the windows.
  */
 export function scoreStock(model, t, settings) {
-  const M = model.M, r = model.ret.get(t), fit = model.fits.get(t);
+  const M = model.M, r = model.ret.get(t), fit = activeFit(model, t, settings);
   if (!r || !fit) return { score: null, parts: {} };
   const skip = settings.skip ? M.SKIP : 0, parts = {};
+  const two = fit.factors === 2, b1 = two ? fit.beta[0] : fit.beta, b2 = two ? fit.beta[1] : NaN;
   let total = 0, ok = true;
   for (const w of windowsFor(settings)) {
-    const m = momentum(r, fit.bench, fit.beta, model.T, M.WINDOWS[w], skip, settings.residual);
+    const m = momentum(r, fit.bench, b1, model.T, M.WINDOWS[w], skip, settings.residual, two ? fit.mkt : null, b2);
     const score = windowScore(m, fit, settings, M);
     parts[w] = { ...(m || {}), score };
     if (score === null || score !== score) ok = false; else total += score;
@@ -284,7 +344,7 @@ export function rankPool(model, pool, settings) {
 
 /** Why scoreStock returned null for this ticker, in the user's terms. */
 export function excludeReason(model, t, settings) {
-  const fit = model.fits.get(t), r = model.ret.get(t), M = model.M, T = model.T;
+  const fit = activeFit(model, t, settings), r = model.ret.get(t), M = model.M, T = model.T;
   if (!r) return 'no price history';
   const need = Math.max(...windowsFor(settings).map(w => M.WINDOWS[w])), skip = settings.skip ? M.SKIP : 0;
   let first = 1;
@@ -297,7 +357,7 @@ export function excludeReason(model, t, settings) {
   if ((settings.residual || settings.r2) && !fit.level) return 'no viable regression benchmark';
   if (settings.residual) {
     let gaps = 0;
-    for (let k = T - need; k <= T - 1 - skip; k++) if (fit.bench[k] !== fit.bench[k]) gaps++;
+    for (let k = T - need; k <= T - 1 - skip; k++) if (fit.bench[k] !== fit.bench[k] || (fit.mkt && fit.mkt[k] !== fit.mkt[k])) gaps++;
     if (gaps) return `benchmark unavailable on ${gaps} session${gaps > 1 ? 's' : ''} (fewer than ${M.MIN_SESSION_PEERS} peers traded)`;
   }
   return 'cannot be scored';

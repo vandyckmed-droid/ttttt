@@ -2,13 +2,15 @@
 // data, renders, and runs the user-initiated refresh against FMP.
 import {
   MODEL, DEFAULT_SETTINGS, decodePrices, encodePrices, buildModel, rankPool, scoreStock,
-  displayValue, excludeReason,
+  excludeReason, activeFit,
 } from './model.js';
 
 const FMP = 'https://financialmodelingprep.com/stable/';
 const REF_SYMBOLS = ['AAPL', 'MSFT'];   // their daily history tells us which sessions a refresh must fill
 const MAX_SESSIONS = 800;           // keep a little more than the 3-year regression window
 const SPLIT_JUMP = Math.log(1.4);   // a new daily move beyond ±40% triggers a full re-download of that name
+const RECONCILE_SESSIONS = 21;      // at least every 21 sessions, re-fetch every name's adjusted series (dividends)
+const ADJ = 'historical-price-eod/dividend-adjusted';   // dividend- and split-adjusted closes (the stored series)
 const HORIZONS = { '1M': 21, '3M': 63, '6M': 126, '1Y': 252, '3Y': 756 };
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -48,7 +50,7 @@ const idb = {
 const state = {
   settings: { ...DEFAULT_SETTINGS, ...store.get('settings', {}) },
   hz: store.get('hz', '6M'),
-  showBench: store.get('showBench', false),
+  overlay: store.get('overlay', 'none'),      // chart overlay: 'none' | 'bench' | 'resid'
   scope: { index: 'all', group: null },
   query: '',
   universe: null, history: null, model: null,
@@ -61,6 +63,8 @@ const state = {
 if (!(state.settings.window in MODEL.WINDOWS) && state.settings.window !== 'blend') state.settings.window = 'blend';
 if (!['raw', 'z', 'pct', 'rank'].includes(state.settings.display)) state.settings.display = 'raw';
 if (!(state.hz in HORIZONS)) state.hz = '6M';
+if (!['none', 'bench', 'resid'].includes(state.overlay)) state.overlay = 'none';
+if (!['one', 'two'].includes(state.settings.factors)) state.settings.factors = 'one';
 const getKey = () => store.get('fmpKey', '');
 
 // ---- formatting --------------------------------------------------------------
@@ -114,11 +118,11 @@ async function loadData() {
   const storedLast = stored && stored.dates ? stored.dates[stored.dates.length - 1] : '', seedLast = seed.dates[seed.dates.length - 1];
   if (storedLast > seedLast || (storedLast === seedLast && !intradayAt(meta))) {
     state.history = decodeBundle(stored);
-    state.asOf = meta || { session: storedLast };
+    state.asOf = meta || { session: storedLast, reconciled: storedLast };
   } else {
     if (stored) { idb.del('history'); idb.del('meta'); }
     state.history = decodeBundle(seed);
-    state.asOf = { session: seed.dates[seed.dates.length - 1] };
+    state.asOf = { session: seedLast, reconciled: seedLast };   // the bundle is fully adjusted as of its build
   }
   rebuild();
 }
@@ -161,6 +165,7 @@ function renderChips() {
   if (s.residual) chips.push(['Residual', true]);
   if (s.vol) chips.push(['Vol-adj', true]);
   if (s.r2) chips.push(['× R²', true]);
+  if ((s.residual || s.r2) && s.factors === 'two') chips.push(['2-factor', true]);
   if (s.display !== 'raw') chips.push([displayLabel(), false]);
   $('chips').innerHTML = chips.map(([c, on]) => `<span class="chip${on ? ' on' : ''}">${esc(c)}</span>`).join('');
   $('dist-n').textContent = `${state.ranking.rows.length} ranked`;
@@ -260,7 +265,7 @@ function closeDetail(pop = true) {
 }
 
 function renderDetail(t, keepScroll = false) {
-  const s = state.model.byTicker.get(t), p = state.history.px[t], T = state.model.T, fit = state.model.fits.get(t);
+  const s = state.model.byTicker.get(t), p = state.history.px[t], T = state.model.T, fit = state.model.fits.get(t), act = activeFit(state.model, t, state.settings);
   const row = state.rowByTicker.get(t), last = p[T - 1], prev = p[T - 2];
   const chg = last > 0 && prev > 0 ? last - prev : null;
   const inPool = pool().includes(t);
@@ -278,19 +283,23 @@ function renderDetail(t, keepScroll = false) {
     ${state.settings.display !== 'raw' ? `<div class="kv"><span>${esc(rawLabel())}</span><b>${fmtScore(row.score)}</b></div>` : ''}
     <div class="kv"><span>Z-score</span><b>${fmtNum(row.z)}</b></div>
     ${Object.entries(parts).map(([w, m]) => `<div class="kv"><span>${w.toUpperCase()} stock return<span class="hint">${m.n} sessions${state.settings.skip ? ' · skip 21' : ''}</span></span>` +
-      `<b>${fmtPct(m.stock)}${state.settings.residual ? `<span class="hint">benchmark ${fmtPct(m.bench)}</span><span class="hint">residual ${fmtPct(m.signal)}</span>` : ''}` +
+      `<b>${fmtPct(m.stock)}${state.settings.residual ? `<span class="hint">benchmark ${fmtPct(m.bench)}</span>${m.mkt === m.mkt ? `<span class="hint">market ${fmtPct(m.mkt)}</span>` : ''}<span class="hint">residual ${fmtPct(m.signal)}</span>` : ''}` +
       `<span class="hint">vol ${(m.sd * Math.sqrt(MODEL.YEAR) * 100).toFixed(1)}% ann.</span></b></div>`).join('')}
-    <div class="chipline">${[[windowLabel(), 1], ['Skip 21', state.settings.skip], ['Residual', state.settings.residual], ['Vol-adj', state.settings.vol], ['× R²', state.settings.r2]]
+    <div class="chipline">${[[windowLabel(), 1], ['Skip 21', state.settings.skip], ['Residual', state.settings.residual], ['2-factor', (state.settings.residual || state.settings.r2) && state.settings.factors === 'two'], ['Vol-adj', state.settings.vol], ['× R²', state.settings.r2]]
       .filter(([, on]) => on).map(([c]) => `<span class="chip on">${esc(c)}</span>`).join('')}</div>`
     : `<p class="note">${inPool ? `Not ranked: ${esc(excludeReason(state.model, t, state.settings))}.` : 'Outside the current universe filter.'}</p>`;
 
-  const lvl = { peer: 'Peer group', sector: 'Sector', universe: 'S&P 900' };
+  const lvl = { peer: 'Peer group', sector: 'Sector', universe: 'S&P 900' }, twoF = act && act.factors === 2;
   const regCard = `
-    ${fit.level ? `<div class="bench"><span class="bench-lv">${lvl[fit.level]} benchmark${fit.level !== 'peer' ? ' · fallback' : ''}</span><b>${esc(fit.name)}</b><span class="hint">Equal-weight, leave-one-out · ${fit.peers} other names</span>${fit.level !== 'peer' ? `<span class="hint">Peer group ${esc(fit.tried[0].name)} not used: ${esc(fit.tried[0].reason.replace('peers', 'other names'))}</span>` : ''}</div>
-    <div class="kv"><span>Beta</span><b>${fit.beta.toFixed(2)}</b></div>
-    <div class="kv"><span>Alpha (annualized)</span><b>${fmtPct(fit.alpha * MODEL.YEAR)}</b></div>
-    <div class="kv"><span>R²</span><b>${fit.r2.toFixed(2)}</b></div>
-    <div class="kv"><span>Observations</span><b>${fit.n}<span class="hint">daily, last ${MODEL.BETA_WINDOW} sessions</span></b></div>`
+    ${fit.level ? `<div class="bench"><span class="bench-lv">${lvl[fit.level]} benchmark${fit.level !== 'peer' ? ' · fallback' : ''}${twoF ? ' + market' : ''}</span><b>${esc(fit.name)}${twoF ? ' <span class="plus">+ S&amp;P 900</span>' : ''}</b><span class="hint">Equal-weight, leave-one-out · ${fit.peers} other names${twoF ? ' · two factors fitted jointly' : ''}</span>${fit.level !== 'peer' ? `<span class="hint">Peer group ${esc(fit.tried[0].name)} not used: ${esc(fit.tried[0].reason.replace('peers', 'other names'))}</span>` : ''}</div>
+    ${twoF ? `<div class="kv"><span>Beta · ${esc(fit.name)}</span><b>${act.beta[0].toFixed(2)}</b></div><div class="kv"><span>Beta · S&amp;P 900</span><b>${act.beta[1].toFixed(2)}</b></div>`
+           : `<div class="kv"><span>Beta</span><b>${act.beta.toFixed(2)}</b></div>`}
+    <div class="kv"><span>Alpha (annualized)</span><b>${fmtPct(act.alpha * MODEL.YEAR)}</b></div>
+    <div class="kv"><span>R²</span><b>${act.r2.toFixed(2)}</b></div>
+    <div class="kv"><span>Idiosyncratic volatility<span class="hint">residual sd, annualized</span></span><b>${(act.resid * Math.sqrt(MODEL.YEAR) * 100).toFixed(1)}%</b></div>
+    <div class="kv"><span>Observations</span><b>${act.n}<span class="hint">daily, last ${MODEL.BETA_WINDOW} sessions</span></b></div>
+    <div class="scatter" id="scatter"></div>
+    <p class="note">Each dot is one session: the stock's daily log return against its benchmark's; the line is the one-factor fit.</p>`
     : `<p class="note">No viable benchmark: this name has too little overlapping history for a ${MODEL.BETA_WINDOW}-session regression (min ${MODEL.MIN_OBS} sessions).</p>`}
     <ul class="tried">${fit.tried.map(x => `<li class="${x.level === fit.level ? 'used' : ''}"><span class="lv">${x.level}</span><span class="nm">${esc(x.name || '')}</span><span class="why">${x.ok ? `β ${x.beta.toFixed(2)} · R² ${x.r2.toFixed(2)}${x.level === fit.level ? ' · used' : ''}` : esc(x.reason)}</span></li>`).join('')}</ul>
     <p class="note">The peer group is used when it has at least ${MODEL.MIN_PEERS} other names and ${MODEL.MIN_OBS} overlapping sessions; otherwise the sector, otherwise the whole S&P 900.</p>`;
@@ -301,8 +310,9 @@ function renderDetail(t, keepScroll = false) {
     <div class="chart-wrap" id="chart"></div>
     <div class="chart-ctl">
       <div class="seg" role="group" aria-label="Chart window">${Object.keys(HORIZONS).map(h => `<button type="button" data-hz="${h}" aria-pressed="${h === state.hz}">${h}</button>`).join('')}</div>
-      <button class="toggle" id="bench-toggle" type="button" aria-pressed="${state.showBench}" ${fit.bench ? '' : 'disabled'}><span class="sw"></span>Benchmark</button>
+      <div class="seg overlay" role="group" aria-label="Overlay">${[['none', 'Price'], ['bench', 'Benchmark'], ['resid', 'Residual']].map(([k, l]) => `<button type="button" data-overlay="${k}" aria-pressed="${k === state.overlay}" ${k !== 'none' && !fit.bench ? 'disabled' : ''}>${l}</button>`).join('')}</div>
     </div>
+    <p class="chart-note">Adjusted for dividends and splits; the latest value is the last traded price.${state.overlay === 'bench' ? ' Dashed: the benchmark applied to the same starting price.' : state.overlay === 'resid' ? ' Dotted: the stock net of β × benchmark (what residual momentum measures).' : ''}</p>
     <section class="card"><h3>Momentum</h3>${momCard}</section>
     <section class="card"><h3>Regression · 3 years</h3>${regCard}</section>
     <section class="card"><h3>Company</h3>
@@ -311,30 +321,34 @@ function renderDetail(t, keepScroll = false) {
       <button class="linkrow" id="peers-link" type="button"><span>Peer group</span><b>${esc(s.g || '—')}<svg><use href="#i-chev"/></svg></b></button>
     </section>`;
   drawChart(t);
+  if (fit.level) drawScatter(t);
   document.querySelectorAll('[data-hz]').forEach(b => b.onclick = () => { state.hz = b.dataset.hz; store.set('hz', state.hz); renderDetail(t, true); });
-  $('bench-toggle').onclick = () => { state.showBench = !state.showBench; store.set('showBench', state.showBench); renderDetail(t, true); };
+  document.querySelectorAll('[data-overlay]').forEach(b => b.onclick = () => { state.overlay = b.dataset.overlay; store.set('overlay', state.overlay); renderDetail(t, true); });
   $('peers-link').onclick = () => { if (!s.g) return; state.scope.group = s.g; state.query = ''; $('search').value = ''; closeDetail(); recompute(); window.scrollTo({ top: 0 }); };
   if (keepScroll) $('d-body').scrollTop = scrollTop;
 }
 
 function drawChart(t) {
   const box = $('chart'), W = box.clientWidth || 360, H = window.innerWidth >= 720 ? 280 : 230, padT = 24, padB = 20, padL = 6, padR = 6;
-  const p = state.history.px[t], dates = state.history.dates, T = state.model.T, fit = state.model.fits.get(t);
+  const p = state.history.px[t], dates = state.history.dates, T = state.model.T, fit = activeFit(state.model, t, state.settings);
   const n = Math.min(HORIZONS[state.hz], T - 1), from = T - 1 - n;
   const ys = p.slice(from), xs = dates.slice(from);
   const first = ys.find(v => v > 0), lastIdx = ys.map(v => v > 0).lastIndexOf(true), last = ys[lastIdx];
   $('hzl').textContent = fmtRange(xs[0], xs[xs.length - 1]);
   if (!(first > 0) || !(last > 0)) { box.innerHTML = '<p class="note">No prices in this window.</p>'; $('hzc').textContent = ''; return; }
-  // Benchmark path: the leave-one-out benchmark's cumulative return applied to the stock's first price.
+  // Overlay path from the stock's first price: the benchmark's cumulative return, or the
+  // stock's cumulative residual (its return net of beta x benchmark, the residual-momentum series).
   let bench = null;
-  if (state.showBench && fit.bench) {
+  if (state.overlay !== 'none' && fit.bench) {
+    const two = fit.factors === 2, b1 = two ? fit.beta[0] : fit.beta, b2 = two ? fit.beta[1] : 0, r = state.model.ret.get(t);
     bench = new Array(ys.length).fill(null); let acc = Math.log(first), ok = true;
     for (let j = 0; j < ys.length; j++) {
       if (j === 0) { bench[j] = ys[0] > 0 ? first : null; continue; }
-      const b = fit.bench[from + j];
-      if (b !== b) { ok = false; bench[j] = null; continue; }
+      const k = from + j, b = fit.bench[k], m = two ? fit.mkt[k] : 0;
+      const step = state.overlay === 'bench' ? b : r[k] - b1 * b - b2 * m;
+      if (step !== step || (two && m !== m)) { ok = false; bench[j] = null; continue; }
       if (!ok) { bench[j] = null; continue; }
-      acc += b; bench[j] = Math.exp(acc);
+      acc += step; bench[j] = Math.exp(acc);
     }
   }
   const vals = ys.filter(v => v > 0).concat(bench ? bench.filter(v => v > 0) : []);
@@ -351,7 +365,7 @@ function drawChart(t) {
 <path class="ar" d="${area}" fill="${col}"/>
 <line class="ref" x1="0" x2="${W}" y1="${ry.toFixed(1)}" y2="${ry.toFixed(1)}"/>
 <text x="${W - padR}" y="${(Y(maxV) - 6).toFixed(1)}" text-anchor="end">$${money(maxV)}</text><text x="${W - padR}" y="${(Y(minV) + 14).toFixed(1)}" text-anchor="end">$${money(minV)}</text>
-${bench ? `<path class="bl" d="${path(bench)}"/>` : ''}
+${bench ? `<path class="${state.overlay === 'resid' ? 'rl' : 'bl'}" d="${path(bench)}"/>` : ''}
 <path class="ln" d="${d}" stroke="${col}"/>
 <g id="hover" style="display:none"><line class="hair" y1="${padT}" y2="${H - padB}"/><circle class="dot" r="4.5" fill="${col}"/></g></svg><div class="tip" id="tip" hidden></div>`;
   const chg = last - first;
@@ -366,7 +380,7 @@ ${bench ? `<path class="bl" d="${path(bench)}"/>` : ''}
     hov.style.display = ''; hov.querySelector('line').setAttribute('x1', x); hov.querySelector('line').setAttribute('x2', x);
     const c = hov.querySelector('circle'); c.setAttribute('cx', x); c.setAttribute('cy', y);
     tip.hidden = false;
-    tip.innerHTML = `${esc(fmtDate(xs[i], { month: 'short', day: 'numeric', year: 'numeric' }))} <b>$${money(ys[i])}</b>${bench && bench[i] > 0 ? ` · bench $${money(bench[i])}` : ''}`;
+    tip.innerHTML = `${esc(fmtDate(xs[i], { month: 'short', day: 'numeric', year: 'numeric' }))} <b>$${money(ys[i])}</b>${bench && bench[i] > 0 ? ` · ${state.overlay === 'resid' ? 'residual' : 'bench'} $${money(bench[i])}` : ''}`;
     const half = tip.offsetWidth / 2 + 4;
     tip.style.left = Math.max(half, Math.min(W - half, x)) + 'px';
   };
@@ -374,6 +388,30 @@ ${bench ? `<path class="bl" d="${path(bench)}"/>` : ''}
   svg.onpointermove = move; svg.onpointerdown = move;
   svg.onpointerleave = e => { if (e.pointerType !== 'touch') hide(); };   // a touch readout stays until the next tap elsewhere
   $('d-body').onpointerdown = e => { if (!box.contains(e.target)) hide(); };
+}
+
+/** Daily stock returns against the benchmark over the regression window, with the one-factor line. */
+function drawScatter(t) {
+  const box = $('scatter'), fit = state.model.fits.get(t), r = state.model.ret.get(t), T = state.model.T;
+  if (!box || !fit.bench) return;
+  const W = box.clientWidth || 360, H = 190, pad = 18, from = Math.max(1, T - MODEL.BETA_WINDOW);
+  const pts = [];
+  for (let k = from; k <= T - 1; k++) { const x = fit.bench[k], y = r[k]; if (x === x && y === y) pts.push([x, y]); }
+  if (pts.length < 3) { box.innerHTML = ''; return; }
+  const q = (arr, p) => { const s = arr.slice().sort((a, b) => a - b); return s[Math.round(p * (s.length - 1))]; };
+  const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+  const lim = Math.max(Math.abs(q(xs, .005)), Math.abs(q(xs, .995)), Math.abs(q(ys, .005)), Math.abs(q(ys, .995))) * 1.05 || 0.01;
+  const X = v => pad + (v + lim) / (2 * lim) * (W - 2 * pad), Y = v => H - pad - (v + lim) / (2 * lim) * (H - 2 * pad);
+  const clamp = v => Math.max(-lim, Math.min(lim, v));
+  const dots = pts.map(([x, y]) => `<circle cx="${X(clamp(x)).toFixed(1)}" cy="${Y(clamp(y)).toFixed(1)}" r="1.6"/>`).join('');
+  const x0 = -lim, x1 = lim, y0 = fit.alpha + fit.beta * x0, y1 = fit.alpha + fit.beta * x1;
+  const pct = v => (v * 100).toFixed(0) + '%';
+  box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" aria-hidden="true">
+<line class="ax" x1="${pad}" x2="${W - pad}" y1="${Y(0).toFixed(1)}" y2="${Y(0).toFixed(1)}"/><line class="ax" y1="${pad}" y2="${H - pad}" x1="${X(0).toFixed(1)}" x2="${X(0).toFixed(1)}"/>
+<g class="pts">${dots}</g>
+<line class="fit" x1="${X(x0).toFixed(1)}" y1="${Y(clamp(y0)).toFixed(1)}" x2="${X(x1).toFixed(1)}" y2="${Y(clamp(y1)).toFixed(1)}"/>
+<text x="${W - pad}" y="${(Y(0) - 4).toFixed(1)}" text-anchor="end">benchmark ${pct(lim)}</text><text x="${(X(0) + 4).toFixed(1)}" y="${pad + 4}">stock ${pct(lim)}</text>
+<text x="${pad}" y="${H - 4}">β ${fit.beta.toFixed(2)} · R² ${fit.r2.toFixed(2)} · ${pts.length} sessions</text></svg>`;
 }
 
 // ---- sheets -----------------------------------------------------------------------
@@ -413,6 +451,7 @@ function renderSettings() {
   const s = state.settings;
   document.querySelectorAll('[data-window]').forEach(b => b.setAttribute('aria-pressed', b.dataset.window === s.window));
   document.querySelectorAll('[data-display]').forEach(b => b.setAttribute('aria-pressed', b.dataset.display === s.display));
+  document.querySelectorAll('[data-factors]').forEach(b => b.setAttribute('aria-pressed', b.dataset.factors === s.factors));
   document.querySelectorAll('[data-flag]').forEach(i => { i.checked = !!s[i.dataset.flag]; });
 }
 function setSettings(patch) {
@@ -434,6 +473,7 @@ function renderDataSheet() {
   $('data-facts').innerHTML = [
     ['Prices through', `${fmtDate(a.session, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })} ${isIntraday() ? 'live ' + nyTime(a.ts) : 'close'}`],
     ['History', `${T} sessions · ${state.model.stocks.length} of ${state.universe.stocks.length} stocks`],
+    ['Adjustments', `dividends and splits through ${fmtDate(a.reconciled || a.session, { month: 'short', day: 'numeric' })}`],
     ['Last refresh', a.refreshedAt ? `${ago(a.refreshedAt)} · ${a.requests} requests` : 'never (bundled data)'],
     ['FMP key', key ? `saved · ${key.slice(0, 4)}…` : 'none'],
   ].map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('');
@@ -555,6 +595,14 @@ async function refresh() {
     // The stored value for L is an intraday snapshot when the last refresh ran during the session:
     // it is replaced by the official close (previousClose when Q follows L directly, else re-fetched).
     const refetchL = Q > L && intradayL && gap.length > 0;
+    // Per-name history requests use FMP's dividend- and split-adjusted series and start one stored
+    // session before what they must fill: that overlapping session is the anchor. If FMP's adjusted
+    // value for the anchor differs from the stored one, a dividend (or split) has gone ex since, and
+    // every earlier stored value is rescaled by the same factor, keeping the whole series adjusted.
+    // At least every RECONCILE_SESSIONS sessions this is done for every name.
+    const anchorIdx = intradayL ? Math.max(0, T - 2) : T - 1, anchor = hist.dates[anchorIdx];
+    const sinceReconcile = hist.dates.filter(d => d > (state.asOf.reconciled || '')).length + (Q > L ? gap.length + 1 : 0);
+    const reconcileAll = sinceReconcile >= RECONCILE_SESSIONS;
 
     // 3. Extend every series; note which names need a history request.
     const px = {}, need = [];
@@ -566,30 +614,40 @@ async function refresh() {
         if (gap.length === 0 && d === Q && q.previousClose > 0) arr[arr.length - 1] = q.previousClose;   // L's official close
         if (gap.length === 1) arr.push(d === Q && q.previousClose > 0 && !refetchL ? q.previousClose : null);
         else if (gap.length > 1) for (const _ of gap) arr.push(null);
-        if (refetchL || gap.length > 1) need.push({ t, from: refetchL ? L : gap[0], to: Q });
+        if (refetchL || gap.length > 1 || reconcileAll) need.push({ t, from: anchor, to: Q });
         arr.push(d === Q ? q.price : d > Q && q.previousClose > 0 ? q.previousClose : null);
-      } else if (d === Q) arr[arr.length - 1] = q.price;
+      } else {
+        if (d === Q) arr[arr.length - 1] = q.price;
+        if (reconcileAll) need.push({ t, from: anchor, to: Q });
+      }
       px[t] = arr;
       // Repair: a hole in the last few sessions (a name that had no quote last time) is refilled.
       if (!need.some(x => x.t === t)) {
-        const lo = Math.max(0, N - 7);
+        const lo = Math.min(anchorIdx, Math.max(0, N - 7));
         if (arr.slice(lo, N - (Q > L ? 1 : 0)).some(v => v === null)) need.push({ t, from: dates[lo], to: Q });
       }
     }
-    // Daily closes from FMP overwrite the requested range; the quote stays the freshest value for Q.
+    // Adjusted closes from FMP overwrite the requested range; values before the anchor are rescaled
+    // when the anchor moved; the quote stays the freshest value for Q.
     const applyRows = (t, rows, from, replace) => {
-      if (replace) px[t].fill(null);
-      const k0 = replace ? 0 : idx.get(from) ?? N;
-      for (const r of rows) { const k = idx.get(r.date); if (k !== undefined && r.price > 0 && k >= k0) px[t][k] = r.price; }
-      if (dateOf[t] === Q && quotes[t].price > 0) px[t][N - 1] = quotes[t].price;
+      const a = px[t];
+      if (replace) a.fill(null);
+      else {
+        const k0 = idx.get(from) ?? N;
+        let ka = -1, factor = 1;
+        for (const r of rows) { const k = idx.get(r.date); if (k !== undefined && k >= k0 && r.adjClose > 0 && a[k] > 0 && (ka < 0 || k < ka)) { ka = k; factor = r.adjClose / a[k]; } }
+        if (ka >= 0 && Math.abs(factor - 1) > 5e-4) for (let k = 0; k < ka; k++) if (a[k] > 0) a[k] = a[k] * factor;
+      }
+      for (const r of rows) { const k = idx.get(r.date); if (k !== undefined && r.adjClose > 0 && (replace || k >= (idx.get(from) ?? N))) a[k] = r.adjClose; }
+      if (dateOf[t] === Q && quotes[t].price > 0) a[N - 1] = quotes[t].price;
     };
     if (need.length) {
       let done = 0;
-      step(`Refreshing · history 0/${need.length}`, .35);
+      step(`Refreshing · ${reconcileAll ? 'adjustments' : 'history'} 0/${need.length}`, .35);
       await mapLimit(need, 5, run, async item => {
         const params = { symbol: item.t, from: item.from }; if (item.to) params.to = item.to;
-        applyRows(item.t, await fmp('historical-price-eod/light', params, key, run), item.from, !!item.full);
-        done++; step(`Refreshing · history ${done}/${need.length}`, .35 + .55 * done / need.length);
+        applyRows(item.t, await fmp(ADJ, params, key, run), item.from, !!item.full);
+        done++; step(`Refreshing · ${reconcileAll ? 'adjustments' : 'history'} ${done}/${need.length}`, .35 + .55 * done / need.length);
       });
     }
     // 4. A new move beyond ±40% is most likely a split: re-download that name's adjusted history.
@@ -597,14 +655,15 @@ async function refresh() {
     if (suspects.length) {
       step(`Refreshing · checking ${suspects.length} possible splits`, .92);
       await mapLimit(suspects.map(t => ({ t })), 5, run, async item => {
-        applyRows(item.t, await fmp('historical-price-eod/light', { symbol: item.t, from: dates[0] }, key, run), dates[0], true);
+        applyRows(item.t, await fmp(ADJ, { symbol: item.t, from: dates[0] }, key, run), dates[0], true);
       });
     }
     // 5. Keep a bounded window, persist, recompute.
     const cut = Math.max(0, N - MAX_SESSIONS);
     const next = { dates: dates.slice(cut), px: Object.fromEntries(Object.entries(px).filter(([, a]) => a.some(v => v > 0)).map(([t, a]) => [t, a.slice(cut)])) };
     state.history = next;
-    state.asOf = { session: Q, ts, refreshedAt: new Date().toISOString(), requests: run.n };
+    const everyName = symbols.every(t => need.some(x => x.t === t));
+    state.asOf = { session: Q, ts, refreshedAt: new Date().toISOString(), requests: run.n, reconciled: everyName && !failed.length ? Q : (state.asOf.reconciled || hist.dates[0]) };
     let saved = true;
     try { await Promise.all([idb.set('history', encodeBundle(next)), idb.set('meta', state.asOf)]); } catch { saved = false; }
     state.busy = false; progress('');
@@ -637,6 +696,7 @@ function wire() {
   document.querySelectorAll('[data-close]').forEach(b => b.onclick = closeSheet);
   document.querySelectorAll('[data-window]').forEach(b => b.onclick = () => setSettings({ window: b.dataset.window }));
   document.querySelectorAll('[data-display]').forEach(b => b.onclick = () => setSettings({ display: b.dataset.display }));
+  document.querySelectorAll('[data-factors]').forEach(b => b.onclick = () => setSettings({ factors: b.dataset.factors }));
   document.querySelectorAll('[data-flag]').forEach(i => i.onchange = () => setSettings({ [i.dataset.flag]: i.checked }));
   $('reset').onclick = () => setSettings({ ...DEFAULT_SETTINGS });
   document.querySelectorAll('[data-scope]').forEach(b => b.onclick = () => { state.scope.index = b.dataset.scope; recompute(); });
