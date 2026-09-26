@@ -235,6 +235,8 @@ body.locked { overflow: hidden; }
 .primary { display: block; width: 100%; min-height: 48px; border-radius: 12px; background: var(--accent); color: #032a12; font-weight: 700; font-size: 16px; }
 .primary:disabled { background: var(--card-2); color: var(--fg-3); cursor: default; }
 .secondary { min-height: 40px; padding: 0 14px; border-radius: 10px; background: var(--card-2); color: var(--fg); font-weight: 600; font-size: 14px; }
+.secondary.wide { display: block; width: 100%; min-height: 44px; }
+.secondary:disabled { color: var(--fg-3); cursor: default; }
 .keyrow { display: flex; gap: 8px; }
 .keyrow input { flex: 1; min-width: 0; height: 40px; padding: 0 12px; border: 0; border-radius: 10px; background: var(--bg-2); color: var(--fg); font-size: 14px; outline: none; }
 .keyrow input:focus { box-shadow: 0 0 0 2px var(--accent); }

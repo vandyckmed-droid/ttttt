@@ -469,6 +469,29 @@ function mockFmp(page, { date = L, hh = 16, mm = 0, sessions = [], splits = {}, 
   await ctx.close();
 }
 
+// ---- 5f. membership check ------------------------------------------------------------------
+{
+  const { ctx, page, log } = await newPage();
+  await page.addInitScript(() => localStorage.setItem('fmpKey', JSON.stringify('k')));
+  await load(page);
+  const names = Object.fromEntries(universe.stocks.map(s => [s.t, s]));
+  // AAPL dropped from the 500, SNDK moved from the 500 to the 400, NEWCO added, GOOG is a second class (ignored).
+  const sp500 = universe.stocks.filter(s => s.i === '500' && s.t !== 'AAPL' && s.t !== 'SNDK').map(s => ({ symbol: s.t, name: s.n }));
+  sp500.push({ symbol: 'NEWCO', name: 'New Company Inc.' }, { symbol: 'GOOG', name: 'Alphabet Inc. (Class C)' });
+  const sp400 = universe.stocks.filter(s => s.i === '400').map(s => ({ t: s.t, n: s.n }));
+  const idx400 = sp400.findIndex(x => x.t === 'ATI'); if (idx400 >= 0) sp400.splice(idx400, 1);
+  const wikiHtml = `<table id="constituents"><tr><th>Symbol</th><th>Security</th><th>GICS Sector</th></tr>${sp400.map(x => `<tr><td>${x.t.replace('-', '.')}</td><td>${x.n}</td><td>x</td></tr>`).join('')}<tr><td>SNDK</td><td>${names.SNDK.n}</td><td>x</td></tr></table>`;
+  await page.route('https://financialmodelingprep.com/**', r => r.fulfill({ json: sp500 }));
+  await page.route('https://en.wikipedia.org/**', r => r.fulfill({ json: { parse: { text: wikiHtml } } }));
+  await page.click('#status'); await page.waitForSelector('#sheet-data.on');
+  await page.click('#do-members');
+  await page.waitForFunction(() => /to add|matches/.test(document.getElementById('member-note').textContent), null, { timeout: 15000 });
+  const note = await page.textContent('#member-note');
+  check(/1 to add: NEWCO \(500\)/.test(note) && /2 to drop: AAPL, ATI/.test(note) && /1 moved: SNDK 500→400/.test(note) && !/GOOG/.test(note), `membership report: ${note}`);
+  check(/Nothing was changed/.test(note) && (await rows(page)).length > 850, 'report only; the universe is untouched');
+  await ctx.close();
+}
+
 // ---- 6. viewports --------------------------------------------------------------------------
 for (const [name, vp, mobile] of [['320', { width: 320, height: 640 }, true], ['430', { width: 430, height: 932 }, true], ['desktop', { width: 1280, height: 800 }, false]]) {
   const { ctx, page, log } = await newPage(vp, mobile);

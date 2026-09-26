@@ -11,6 +11,7 @@ const MAX_SESSIONS = 800;           // keep a little more than the 3-year regres
 const SPLIT_JUMP = Math.log(1.2);   // a new daily move beyond ±20% triggers a full re-download of that name (splits)
 const RECONCILE_SESSIONS = 21;      // at least every 21 sessions, re-fetch every name's adjusted series (dividends)
 const ADJ = 'historical-price-eod/dividend-adjusted';   // dividend- and split-adjusted closes (the stored series)
+const SP400_API = 'https://en.wikipedia.org/w/api.php?action=parse&page=List_of_S%26P_400_companies&prop=text&format=json&formatversion=2&origin=*';
 const HORIZONS = { '1M': 21, '3M': 63, '6M': 126, '1Y': 252, '3Y': 756 };
 const PAST = { '1w': 5, '1m': 21 };   // "as of" rankings: sessions back
 const $ = id => document.getElementById(id);
@@ -665,6 +666,8 @@ function renderDataSheet() {
     ['FMP key', key ? `saved · ${key.slice(0, 4)}…` : 'none'],
   ].map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('');
   $('do-refresh').disabled = !key || state.busy || !state.model;
+  $('do-members').disabled = !key;
+  if (!$('member-note').textContent) setNote('member-note', 'Compares today\u2019s S&P 500 and 400 lists with the bundled universe and reports differences. Changes nothing.');
   $('do-refresh').textContent = state.busy ? 'Refreshing…' : 'Refresh prices';
   if (!state.busy) setNote('refresh-note', key
     ? `Quotes for all ${state.universe.stocks.length} stocks (${Math.ceil(state.universe.stocks.length / 100)} requests), 2 calendar requests when a session is added, and history only for missing sessions or names. Every ${RECONCILE_SESSIONS} sessions it re-fetches each name's adjusted series to pick up dividends and splits (about ${state.universe.stocks.length} requests); next in ${Math.max(0, RECONCILE_SESSIONS - T + Math.max(0, state.history.dates.indexOf(a.reconciled || '') + 1))} sessions.`
@@ -891,6 +894,56 @@ function refreshDone(ok) {
   } else btn.animate([{ transform: 'translateX(0)' }, { transform: 'translateX(-4px)' }, { transform: 'translateX(4px)' }, { transform: 'translateX(0)' }], { duration: 300 });
 }
 
+// ---- membership check (manual; reports only, changes nothing) ----------------------------
+/** The S&P 400 constituents from Wikipedia's table, parsed in the browser. */
+async function fetchSp400() {
+  const r = await fetch(SP400_API);
+  if (r.status === 429) throw new Error('Wikipedia is rate-limiting requests right now; try again in a minute');
+  if (!r.ok) throw new Error(`Wikipedia replied ${r.status}`);
+  const html = (await r.json()).parse.text;
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const table = doc.getElementById('constituents');
+  if (!table) throw new Error('Could not find the constituents table on Wikipedia');
+  const head = [...table.querySelectorAll('tr')][0].children, col = {};
+  [...head].forEach((c, i) => { const h = c.textContent.toLowerCase(); if (h.includes('symbol')) col.symbol = i; if (h.includes('security')) col.name = i; });
+  if (col.symbol === undefined) throw new Error('Unexpected table layout on Wikipedia');
+  const out = [];
+  for (const tr of [...table.querySelectorAll('tr')].slice(1)) {
+    const c = tr.children; if (c.length <= col.symbol) continue;
+    out.push({ t: c[col.symbol].textContent.trim().replace(/\./g, '-'), n: col.name !== undefined ? c[col.name].textContent.trim() : '' });
+  }
+  if (out.length < 350) throw new Error(`Only ${out.length} S&P 400 rows parsed`);
+  return out;
+}
+const classKey = n => n.trim().toLowerCase().replace(/\s*\(class [a-z]\)\s*$/, '');
+async function checkMembership() {
+  const key = getKey(), note = 'member-note', btn = $('do-members');
+  if (!key) { setNote(note, 'Add your FMP key first: the S&P 500 list comes from FMP.', 'err'); return; }
+  btn.disabled = true; setNote(note, 'Checking the S&P 500 (FMP) and S&P 400 (Wikipedia) lists…');
+  const run = { n: 0, aborted: false, ctl: new AbortController() };
+  try {
+    const [sp500, sp400] = await Promise.all([fmp('sp500-constituent', {}, key, run), fetchSp400()]);
+    const live = new Map();
+    for (const c of sp500) live.set(c.symbol, { t: c.symbol, n: c.name || '', i: '500' });
+    for (const c of sp400) if (!live.has(c.t)) live.set(c.t, { t: c.t, n: c.n, i: '400' });
+    // The bundle keeps one share class per company: a second class of a company already
+    // represented is not an addition.
+    const bundled = new Map(state.universe.stocks.map(s => [s.t, s]));
+    const bundledCompanies = new Set(state.universe.stocks.map(s => classKey(s.n)));
+    const adds = [...live.values()].filter(c => !bundled.has(c.t) && !bundledCompanies.has(classKey(c.n)));
+    const drops = state.universe.stocks.filter(s => !live.has(s.t));
+    const moves = state.universe.stocks.filter(s => live.has(s.t) && live.get(s.t).i !== s.i);
+    const list = (arr, f) => arr.map(f).join(', ');
+    const parts = [];
+    if (adds.length) parts.push(`${adds.length} to add: ${list(adds, c => `${c.t} (${c.i})`)}`);
+    if (drops.length) parts.push(`${drops.length} to drop: ${list(drops, s => s.t)}`);
+    if (moves.length) parts.push(`${moves.length} moved: ${list(moves, s => `${s.t} ${s.i}→${live.get(s.t).i}`)}`);
+    setNote(note, parts.length ? `${parts.join('. ')}. Nothing was changed: rebuild the data bundle to apply (${run.n + 1} requests).`
+      : `The bundle matches today's S&P 500 and 400 lists (${live.size} names, ${run.n + 1} requests).`, parts.length ? '' : 'ok');
+  } catch (e) { setNote(note, e.message || 'Check failed', 'err'); }
+  finally { btn.disabled = !getKey(); }
+}
+
 // ---- wiring ----------------------------------------------------------------------------
 function wire() {
   $('btn-settings').onclick = () => openSheet('sheet-settings');
@@ -899,6 +952,7 @@ function wire() {
   dragToDismiss($('sheet-settings')); dragToDismiss($('sheet-data'));
   $('btn-refresh').onclick = () => refresh();
   $('do-refresh').onclick = () => refresh();
+  $('do-members').onclick = () => checkMembership();
   $('backdrop').onclick = closeSheet;
   // A tap outside the compact settings panel closes it (scrolling the list does not).
   document.addEventListener('click', e => {
