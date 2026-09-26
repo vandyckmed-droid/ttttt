@@ -564,10 +564,12 @@ function wire() {
   $('d-back').onclick = () => closeDetail();
   window.onpopstate = () => { const t = location.hash.slice(1); if (t && state.model && state.model.byTicker.has(t)) openDetail(t, false); else closeDetail(false); };
   document.onkeydown = e => { if (e.key === 'Escape') { if (openSheetId) closeSheet(); else if (state.cur) closeDetail(); } };
-  $('key-save').onclick = () => {
+  $('key-save').onclick = async () => {
     const k = $('key').value.trim();
     if (!k) { setNote('key-note', 'Paste a key first.', 'err'); return; }
-    store.set('fmpKey', k); renderDataSheet(); setNote('key-note', 'Key saved in this browser. Press Refresh prices to use it.', 'ok');
+    store.set('fmpKey', k); renderDataSheet(); setNote('key-note', 'Saved. Testing the key with one quote request…');
+    try { await fmp('batch-quote', { symbols: 'AAPL' }, k, { n: 0 }); setNote('key-note', 'Key accepted by FMP (1 request). Press Refresh prices to use it.', 'ok'); }
+    catch (e) { setNote('key-note', e.kind === 'key' ? 'FMP rejected this key. Check it and save again.' : `Saved, but the test failed: ${e.message}`, 'err'); }
   };
   $('key').onkeydown = e => { if (e.key === 'Enter') $('key-save').click(); };
   $('key-clear').onclick = () => { store.del('fmpKey'); renderDataSheet(); setNote('key-note', 'Key removed.'); };

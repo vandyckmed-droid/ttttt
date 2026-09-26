@@ -213,11 +213,14 @@ function mockFmp(page, { date = L, hh = 16, mm = 0, sessions = [], splits = {}, 
   check(log.fmp.length === 0, 'no FMP request without a key');
   await page.click('#key-save');
   check(/Paste a key/.test(await page.textContent('#key-note')), 'empty key rejected');
-  await page.fill('#key', 'test-key-1234'); await page.click('#key-save');
-  check(!(await page.locator('#do-refresh').isDisabled()), 'refresh enabled after saving a key');
-  check((await page.textContent('#data-facts')).includes('test…'), 'key shown masked');
   const keySeen = [];
   const calls = await mockFmp(page, { keySeen });
+  await page.fill('#key', 'test-key-1234'); await page.click('#key-save');
+  await page.waitForFunction(() => /accepted/.test(document.getElementById('key-note').textContent), null, { timeout: 10000 });
+  check(calls.quote === 1, 'saving a key tests it with exactly one quote request');
+  check(!(await page.locator('#do-refresh').isDisabled()), 'refresh enabled after saving a key');
+  check((await page.textContent('#data-facts')).includes('test…'), 'key shown masked');
+  calls.quote = 0;
   await page.click('#do-refresh');
   await page.waitForFunction(() => /^Updated/.test(document.getElementById('refresh-note').textContent), null, { timeout: 15000 });
   const toast = await page.textContent('#refresh-note');
@@ -233,7 +236,7 @@ function mockFmp(page, { date = L, hh = 16, mm = 0, sessions = [], splits = {}, 
   await page.reload({ waitUntil: 'networkidle' }); await page.waitForSelector('.list:not(.skeleton) .row');
   check(/updated/.test(await page.textContent('#status-text')), 'refreshed state persists across reload');
   check((await page.locator('.list .row[data-t="MU"] .sc').textContent()) === mu, 'persisted prices reproduce the ranking');
-  check(log.fmp.length === QB, `total FMP requests in this session: ${log.fmp.length} (no automatic refresh on reload)`);
+  check(log.fmp.length === QB + 1, `total FMP requests in this session: ${log.fmp.length} = 1 key test + ${QB} quote batches (none on reload)`);
   await page.click('#status'); await page.click('#key-clear');
   check(await page.locator('#do-refresh').isDisabled(), 'clearing the key disables refresh');
   check(log.errors.length === 0, `console clean: ${JSON.stringify(log.errors)}`);
