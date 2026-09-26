@@ -513,9 +513,10 @@ tbody tr[data-t]{cursor:pointer}tbody tr[data-t]:active td{background:var(--chip
 .seg button:focus-visible{outline:2px solid var(--pos);outline-offset:1px}
 """
 
-# Mirrors score()/rank() above. DATA is [[ticker, bucket, prices], ...]
-# in market-cap order; daily log returns are derived exactly as daily_log_returns().
-JS = """
+# Shared by every rendered page: payload, scoring (mirrors score()/rank()), settings
+# state, and the pool-level analytics (ΔRank, residual pullback). DATA is
+# [[ticker, bucket, prices, index], ...] in market-cap order.
+JS_CORE = """
 const $=id=>document.getElementById(id),b=document.body;
 // [ticker, cap bucket, daily log returns, change of the latest price vs the prior close]
 // [ticker, cap bucket, daily log returns, {d1: latest change vs prior close,
@@ -551,14 +552,6 @@ if(!["auto","light","dark"].includes(S.theme))S.theme="auto";
 if(!["raw","z","pct","rank"].includes(S.disp))S.disp="raw";
 if(!S.wins.size)S.wins.add("12m");if(!S.idx.size)S.idx.add("500");
 const save=()=>{store.set("theme",S.theme);store.set("idx",[...S.idx].join(","));store.set("caps",[...S.caps].join(","));store.set("wins",[...S.wins].join(","));store.set("vol",S.vol?"1":"0");store.set("r2",S.r2?"1":"0");store.set("skip",S.skip?"1":"0");store.set("disp",S.disp);store.set("today",S.today?"1":"0");store.set("dmode",S.dmode)};
-// Rank-move badges: after a settings change, rows whose rank moved show a
-// temporary ▲n / ▼n next to the ticker (CSS fades them out).
-let prevRank=null,lastRank={},labNames=[],lastScoreOf=null,lastPoolRaw=[];
-let bsize=store.get("bsize","w")==="r"?"r":"w";  // basket treemap tile size: weight, or risk share w·σ
-// basket treemap tile colour: score, rank change over LAG sessions, mean correlation with the
-// rest of the basket, or risk contribution vs weight
-const BCOL={score:"Score",drank:"\\u0394Rank",resid:"Resid",corr:"Corr",risk:"Risk%"},LAG=21,CORRW=126;
-let bcol=store.get("bcol","score");if(!(bcol in BCOL))bcol="score";
 let lastPool=[],applyN=0,lagCache=null,pbCache=null;
 // Residual pullback (mirrors residual_pullback()): eps_t = r_t - leave-one-out mean of the peer
 // group (>= MIN_PEERS other eligible names in the current pool, else the sector); resid21 = sum of
@@ -581,10 +574,30 @@ function pullbacks(){if(pbCache&&pbCache.n===applyN)return pbCache;const need=PU
     out[t]={raw21,bench21:raw21-resid21,resid21,sigma,pullback:-resid21/(Math.max(sigma,1e-6)*Math.sqrt(PULL_W)),benchmark:label,peerGroup:label==="group"?g:label==="sector"?sc:null,peers}}
   Object.keys(out).sort((a,c)=>out[c].pullback-out[a].pullback).forEach((t,i)=>out[t].rank=i+1);
   pbCache={n:applyN,out,total:names.length};return pbCache}
+// ΔRank: the same scoring on the pool as it stood LAG sessions ago (cached per apply()); sd is the
+// dispersion of rank moves across the whole pool (the treemap's colour scale saturates at one SD).
+const LAG=21;
+function lagRanks(scoreOf){if(lagCache&&lagCache.n===applyN)return lagCache;const now=[],lag=[];
+  for(const [t,,r] of lastPool){const a=scoreOf(r),b=scoreOf(r.slice(0,r.length-LAG));if(a!==null)now.push([t,a]);if(b!==null)lag.push([t,b])}
+  const rk=arr=>{const o={};arr.sort((x,y)=>y[1]-x[1]).forEach(([t,v],i)=>o[t]=[i,v]);return o};const N=rk(now),Lg=rk(lag);
+  const dv=Object.keys(N).filter(t=>t in Lg).map(t=>Lg[t][0]-N[t][0]),sd=dv.length>1?Math.sqrt(dv.reduce((a,v)=>a+v*v,0)/dv.length):1;
+  lagCache={n:applyN,now:N,lag:Lg,sd:Math.max(1,sd)};return lagCache}
+const fmtDate=d=>{const [y,m,dd]=d.split("-");return new Date(+y,m-1,+dd).toLocaleDateString(undefined,{month:"short",day:"numeric"})};
+"""
+
+# The page UI (rank table, settings sheet, detail view, Lab, Basket).
+JS_APP = """
+// Rank-move badges: after a settings change, rows whose rank moved show a
+// temporary ▲n / ▼n next to the ticker (CSS fades them out).
+let prevRank=null,lastRank={},labNames=[],lastScoreOf=null,lastPoolRaw=[];
+let bsize=store.get("bsize","w")==="r"?"r":"w";  // basket treemap tile size: weight, or risk share w·σ
+// basket treemap tile colour: score, rank change over LAG sessions, mean correlation with the
+// rest of the basket, or risk contribution vs weight
+const BCOL={score:"Score",drank:"\\u0394Rank",resid:"Resid",corr:"Corr",risk:"Risk%"},CORRW=126;
+let bcol=store.get("bcol","score");if(!(bcol in BCOL))bcol="score";
 const CW={"1M":21,"3M":63,"6M":126,"1Y":252};let cw=store.get("cw","3M");if(!(cw in CW))cw="3M";let lastCorr=null;
 let lw=store.get("lw","1M");if(!(lw in CW))lw="1M";  // cumulative heatmap window; 1M is daily, longer windows weekly
 let lv=store.get("lv","1")!=="0";  // heatmap cells: VolAdj of the running window (default) or raw cumulative return
-const fmtDate=d=>{const [y,m,dd]=d.split("-");return new Date(+y,m-1,+dd).toLocaleDateString(undefined,{month:"short",day:"numeric"})};
 function apply(){
   const skip=S.skip?SKIP:0,vol=S.vol,wins=["6m","12m"].filter(w=>S.wins.has(w));
   if(S.theme==="auto")delete document.documentElement.dataset.theme;else document.documentElement.dataset.theme=S.theme;
@@ -730,12 +743,7 @@ function renderTreemap(rows){const box=$("tm");if(!box)return;const W=box.client
   // Other modes: a signed value per name, green positive / red negative, saturating at vmax
   const colv=(v,vmax,ease)=>{if(v===null)return"var(--chip)";let k=Math.min(1,Math.abs(v)/vmax);if(ease)k=Math.sqrt(k);return`color-mix(in oklab,var(${v>=0?"--pos":"--neg"}) ${Math.round(k*100)}%,var(--chip))`};
   const rets=t=>{const p=PX[t];return p.slice(1).map((v,i)=>Math.log(v/p[i]))};
-  // ΔRank: the same scoring on the pool as it stood LAG sessions ago (cached per apply()).
-  if(bcol==="drank"&&(!lagCache||lagCache.n!==applyN)){const now=[],lag=[];
-    for(const [t,,r] of lastPool){const a=lastScoreOf(r),b=lastScoreOf(r.slice(0,r.length-LAG));if(a!==null)now.push([t,a]);if(b!==null)lag.push([t,b])}
-    const rk=arr=>{const o={};arr.sort((x,y)=>y[1]-x[1]).forEach(([t,v],i)=>o[t]=[i,v]);return o};const N=rk(now),Lg=rk(lag);
-    // dispersion of rank moves across the whole pool: the colour scale saturates at one SD
-    const dv=Object.keys(N).filter(t=>t in Lg).map(t=>Lg[t][0]-N[t][0]),sd=dv.length>1?Math.sqrt(dv.reduce((a,v)=>a+v*v,0)/dv.length):1;lagCache={n:applyN,now:N,lag:Lg,sd:Math.max(1,sd)}}
+  if(bcol==="drank")lagRanks(lastScoreOf);
   // Corr / Risk%: daily log returns of these names over the trailing CORRW sessions (aligned on the latest close)
   let cov=null;if(bcol==="corr"||bcol==="risk"){const L=Math.min(CORRW,...items.map(i=>PX[i.t].length-1)),X=items.map(i=>rets(i.t).slice(-L));
     const mu=X.map(x=>x.reduce((a,v)=>a+v,0)/L);cov=X.map((x,a)=>X.map((y,b)=>{let s=0;for(let k=0;k<L;k++)s+=(x[k]-mu[a])*(y[k]-mu[b]);return s/(L-1)}))}
@@ -1168,6 +1176,230 @@ def load_basket():
         return None
 
 
+
+# ---- Ledger page (Stage 1 of the "Analytical Ledger" direction) ---------------
+# The Rank screen only, rendered from the same payload as index.html: warm paper,
+# hairlines, no cards, tabular numerals, a score rail under every score (a score
+# axis from P5 to P95 with the percentile cuts as reference ticks), full-width
+# cut lines only while the list is score-ordered, one swappable metric column,
+# and a settings line whose tokens toggle the same stored settings as the app.
+LEDGER_LIGHT = ("--paper:#F7F5F0;--ink:#17181A;--muted:#6F6B63;--rule:#D9D5CB;--cut:#8F8A7E;--tint:#ECE8DF;"
+                "--pos:#2F4F73;--neg:#8C3A32;--hover:#F0EDE5;color-scheme:light")
+LEDGER_DARK = ("--paper:#141311;--ink:#E8E4DB;--muted:#9A958A;--rule:#2C2A26;--cut:#6B665C;--tint:#232119;"
+               "--pos:#8FB0D6;--neg:#D6857A;--hover:#1B1A17;color-scheme:dark")
+LEDGER_CSS = f"""
+:root{{{LEDGER_LIGHT}}}
+@media (prefers-color-scheme:dark){{:root:not([data-theme=light]){{{LEDGER_DARK}}}}}
+:root[data-theme=dark]{{{LEDGER_DARK}}}
+:root[data-theme=light]{{{LEDGER_LIGHT}}}
+""" + """*{box-sizing:border-box}
+html{background:var(--paper)}
+body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.35 "IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;font-variant-numeric:tabular-nums;-webkit-text-size-adjust:100%}
+main{max-width:560px;margin:0 auto;padding:14px 16px 40px}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer;font-variant-numeric:tabular-nums}
+/* masthead */
+.mast{display:grid;grid-template-columns:1fr auto;align-items:baseline;column-gap:12px;padding-bottom:10px;border-bottom:1px solid var(--ink)}
+.mast h1{font-size:24px;font-weight:600;letter-spacing:-.01em;margin:0;line-height:1.1}
+.mast .asof{grid-column:1/-1;margin:4px 0 0;font-size:13px;color:var(--muted)}
+.mast .acts{display:flex;gap:14px;flex:none;font-size:13px}
+.mast .acts button{color:var(--muted);text-decoration:underline;text-decoration-color:var(--rule);text-underline-offset:3px}
+.mast .acts button.busy{color:var(--ink)}
+/* settings line: one sentence of tappable tokens */
+.line{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 18px;padding:8px 0;border-bottom:1px solid var(--rule);font-size:13px;color:var(--muted)}
+.line .grp{white-space:nowrap}.line .sep{padding:0 5px;color:var(--rule)}
+.tok{color:var(--muted);padding:2px 0;border-bottom:1px solid transparent}
+.tok[aria-pressed=true]{color:var(--ink);border-bottom-color:var(--cut)}
+.tok[aria-expanded=true]{border-bottom-style:solid;border-bottom-color:var(--ink)}
+.sub{display:flex;gap:16px;padding:8px 0 8px 28px;border-bottom:1px solid var(--rule);font-size:13px}
+.sub button{color:var(--muted)}.sub button[aria-pressed=true]{color:var(--ink);border-bottom:1px solid var(--ink)}
+.sub[hidden]{display:none}
+/* the ledger */
+table{width:100%;border-collapse:collapse}
+thead th{font-weight:500;font-size:12px;color:var(--muted);text-align:left;padding:10px 0 6px;border-bottom:1px solid var(--rule);letter-spacing:.02em;vertical-align:bottom;position:relative}
+thead th.num{text-align:right}
+thead th{white-space:nowrap}thead th.rk{width:28px;padding-right:6px}thead th.sc{width:92px}thead th.mc{width:88px}
+th button{color:inherit;text-align:right;vertical-align:bottom}th button[data-dir]:not([data-dir=""]){color:var(--ink)}
+th .arr{display:inline-block;margin-left:3px;color:var(--ink)}
+th .pick{margin-left:6px;color:var(--muted);font-size:11px;padding:2px 4px;border:1px solid var(--rule);border-radius:3px;vertical-align:bottom}
+th .pick[aria-expanded=true]{color:var(--ink);border-color:var(--ink)}
+.menu{position:absolute;right:0;top:100%;z-index:3;display:flex;flex-direction:column;align-items:flex-end;gap:2px;padding:8px 12px;background:var(--paper);border:1px solid var(--rule);box-shadow:0 6px 18px rgba(0,0,0,.08);font-size:14px;font-weight:400;text-align:right}
+.menu button{color:var(--muted);padding:4px 0;white-space:nowrap}.menu button[aria-checked=true]{color:var(--ink);border-bottom:1px solid var(--ink)}
+.menu[hidden]{display:none}
+tbody td{padding:0;height:36px;border-bottom:1px solid var(--rule);vertical-align:middle}
+tbody tr:active td{background:var(--hover)}
+td.rk{width:28px;padding-right:6px;text-align:right;font-size:12px;color:var(--muted)}
+td.tk{font-weight:500;letter-spacing:.01em}
+td.tk span{display:inline-block;padding:2px 4px;margin-left:-4px}
+tr.bk td.tk span{background:var(--tint)}
+td.sc{text-align:right;width:118px;padding-right:2px}
+td.sc .v{display:inline-block;min-width:52px;text-align:right;vertical-align:middle}
+td.mc{text-align:right;width:72px;padding-left:10px}
+td.mc.none{color:var(--muted)}
+/* score rail: a score axis, P5 at 8px to P95 at 48px (percentile cuts are ticks), with an 8px overflow
+   zone at each end that keeps spreading names beyond P5/P95 until they cap at the edge */
+.rail{position:relative;display:inline-block;width:56px;height:9px;margin-right:8px;vertical-align:middle}
+.rail i{position:absolute;display:block}
+.rail .tr{left:8px;right:8px;top:4px;height:1px;background:var(--cut);opacity:.6}
+.rail .ov{top:4px;height:1px;width:8px;background:var(--rule)}.rail .ov.l{left:0}.rail .ov.r{right:0}
+.rail .tk{top:2px;width:1px;height:5px;background:var(--cut);opacity:.55}
+.rail .tk.mid{top:1px;height:7px;opacity:.8}
+.rail .mk{top:1.5px;width:6px;height:6px;margin-left:-3px;border-radius:50%;background:var(--c)}
+.rail .w6{top:0;width:1px;height:5px;margin-left:-.5px;background:var(--ink);opacity:.7}
+.rail .w12{top:0;width:1px;height:9px;margin-left:-.5px;background:var(--ink);opacity:.7}
+.rail .ln{top:4px;height:1px;background:var(--ink);opacity:.4}
+.rail .mk{z-index:1}
+.rail .cap{top:1.5px;width:0;height:0;border-top:3px solid transparent;border-bottom:3px solid transparent}
+.rail .cap.hi{right:-1px;border-left:5px solid var(--c)}
+.rail .cap.lo{left:-1px;border-right:5px solid var(--c)}
+/* cut lines: editorial section breaks, only while the list is score-ordered */
+tr.cut td{height:30px;border-bottom:1px solid var(--cut);border-top:1px solid var(--cut);padding:0}
+tr.cut td span{display:block;padding:7px 0 7px 0;font-size:11px;font-weight:500;letter-spacing:.08em;text-transform:uppercase;color:var(--cut);width:28px;text-align:right;padding-right:6px}
+tr.cut + tr td{border-top:0}
+.empty{padding:32px 0;color:var(--muted);text-align:center}
+.note{margin:18px 0 0;font-size:12px;color:var(--muted);line-height:1.45}
+.note b{font-weight:500;color:var(--ink)}
+.legend{display:flex;gap:18px;flex-wrap:wrap;margin-top:10px;font-size:12px;color:var(--muted);align-items:center}
+.legend span>.rail{flex:none;margin:0 8px 0 0}.legend>span{display:flex;align-items:center}
+"""
+
+LEDGER_JS = """
+// ---- Ledger: rank screen --------------------------------------------------
+// % and rank live in the gutter and the rail here: only raw / Z is a display choice (S.disp is shared with the main page)
+const COLS={drank:"\\u0394Rank",today:"Today",d5:"5D","6m":"6M","12m":"12M",vol:"VolAdj",r2:"R\\u00b2",resid:"Resid"};
+let col=store.get("lg.col","drank");if(!(col in COLS))col="drank";
+let sort=store.get("lg.sort","score:desc");if(!/^(score|col):(asc|desc)$/.test(sort))sort="score:desc";
+let lastFmt=null,openSub=null;
+const sgn=v=>v>=0?"+":"\\u2212";
+const fmtPct=(v,d)=>sgn(v)+Math.abs(v*100).toFixed(d)+"%";
+const qpos=(arr,k)=>{const n=arr.length,c=Math.round(n*(1-k/100));return c>0&&c<n?(arr[c-1]+arr[c])/2:null};  // the k-th percentile cut, in score units
+function apply(){
+  const skip=S.skip?SKIP:0,vol=S.vol,wins=["6m","12m"].filter(w=>S.wins.has(w)),Z=S.disp==="z";
+  if(S.theme==="auto")delete document.documentElement.dataset.theme;else document.documentElement.dataset.theme=S.theme;
+  $("theme").textContent={auto:"Auto",light:"Day",dark:"Night"}[S.theme];
+  const pool=R.filter(([,c,,,ix])=>S.idx.has(ix)&&S.caps.has(c));lastPool=pool;applyN++;
+  const rows=[];for(const [t,,r] of pool){const c=wins.map(w=>score(r,WIN[w],skip,vol,S.r2));if(!c.includes(null))rows.push([t,c])}
+  let cols=wins.map((_,j)=>rows.map(([,c])=>c[j]));
+  if(Z)cols=cols.map(winsorize).map(cl=>{const k=cl.length;if(k<2)return cl.map(()=>0);const m=cl.reduce((a,v)=>a+v,0)/k,sd=Math.sqrt(cl.reduce((a,v)=>a+(v-m)**2,0)/(k-1));return cl.map(v=>sd?(v-m)/sd:0)});
+  const comp=rows.map((_,i)=>cols.reduce((a,cl)=>a+cl[i]/wins.length,0));
+  const ranked=rows.map(([t],i)=>({t,v:comp[i],w:cols.map(cl=>cl[i])})).sort((a,c)=>c.v-a.v);
+  const n=ranked.length;ranked.forEach((x,i)=>x.rk=i);
+  lastScoreOf=r=>{const c=wins.map(w=>score(r,WIN[w],skip,vol,S.r2));return c.includes(null)?null:c.reduce((a,v)=>a+v,0)/c.length};
+  lastRank={};ranked.forEach(x=>lastRank[x.t]=[x.rk]);
+  // rail axis: P5 .. P95 in score units; the other cuts are reference ticks on it
+  const vs=ranked.map(x=>x.v),cut={};for(const k of PCTS)cut[k]=qpos(vs,k);
+  const lo=cut[5],hi=cut[95],span=hi!==null&&lo!==null&&hi>lo?hi-lo:null,pos=v=>span===null?.5:(v-lo)/span;
+  const amax=Math.max(Math.abs(hi??0),Math.abs(lo??0))||1;
+  const fmt=v=>Z||vol?sgn(v)+Math.abs(v).toFixed(2):fmtPct(v,1);lastFmt=fmt;
+  const colour=v=>`color-mix(in oklab,var(${v>=0?"--pos":"--neg"}) ${Math.round(Math.min(1,Math.abs(v)/amax)*100)}%,var(--ink))`;
+  // the swappable metric column
+  const byT=Object.fromEntries(pool.map(x=>[x[0],x]));let metric,mfmt;
+  if(col==="drank"){const L=lagRanks(lastScoreOf);metric=t=>(L.lag[t]&&L.now[t])?L.lag[t][0]-L.now[t][0]:null;mfmt=v=>v===0?"0":sgn(v)+Math.abs(v)}
+  else if(col==="today"){metric=t=>byT[t][3].d1;mfmt=v=>fmtPct(v,2)}
+  else if(col==="d5"){metric=t=>byT[t][3].d5;mfmt=v=>fmtPct(v,2)}
+  else if(col==="6m"||col==="12m"){metric=t=>score(byT[t][2],WIN[col],skip,vol,S.r2);mfmt=v=>vol?sgn(v)+Math.abs(v).toFixed(2):fmtPct(v,1)}
+  else if(col==="vol"){metric=t=>{const c=wins.map(w=>score(byT[t][2],WIN[w],skip,true,S.r2));return c.includes(null)?null:c.reduce((a,v)=>a+v,0)/c.length};mfmt=v=>sgn(v)+Math.abs(v).toFixed(2)}
+  else if(col==="r2"){metric=t=>{const r=byT[t][2],c=wins.map(w=>r.length<WIN[w]?null:r2of(r.slice(r.length-WIN[w],r.length-skip)));return c.includes(null)?null:c.reduce((a,v)=>a+v,0)/c.length};mfmt=v=>v.toFixed(2)}
+  else{const pb=pullbacks();metric=t=>pb.out[t]?-pb.out[t].pullback:null;mfmt=v=>sgn(v)+Math.abs(v).toFixed(2)+"\\u03c3"}
+  const mv={};for(const x of ranked)mv[x.t]=metric(x.t);
+  // order: score-ordered (cut lines shown) or by the metric column (cut lines withdrawn, ticks remain)
+  const [key,dir]=sort.split(":");let order=ranked.slice();
+  if(key==="score"){if(dir==="asc")order.reverse()}
+  else{const nv=v=>v===null?(dir==="desc"?-Infinity:Infinity):v;order.sort((a,c)=>dir==="desc"?nv(mv[c.t])-nv(mv[a.t]):nv(mv[a.t])-nv(mv[c.t]))}
+  const cutAfter={};if(key==="score")for(const k of PCTS){const c=Math.round(n*(1-k/100));if(c>0&&c<n)cutAfter[dir==="desc"?c-1:c]="P"+k}
+  const bk=new Set((BASKET&&BASKET.rows||[]).map(r=>r[0]));
+  // rail geometry: P5 at 8px, P95 at 48px; the 8px zones outside keep the linear scale (EXT of the span each) before capping
+  const MAIN=40,OV=8,EXT=.5;
+  const X=p=>p>=0&&p<=1?OV+p*MAIN:p>1?OV+MAIN+Math.min(1,(p-1)/EXT)*OV:OV-Math.min(1,-p/EXT)*OV,over=p=>p>1+EXT||p<-EXT;
+  const rail=x=>{if(span===null)return"";const p=pos(x.v),c=colour(x.v);let h=`<span class=rail style="--c:${c}"><i class="ov l"></i><i class=tr></i><i class="ov r"></i>`;
+    for(const k of PCTS)if(cut[k]!==null)h+=`<i class="tk${k===50?" mid":""}" style="left:${X(pos(cut[k])).toFixed(1)}px"></i>`;
+    if(wins.length===2){const a=X(pos(x.w[0])),b=X(pos(x.w[1]));
+      h+=`<i class=ln style="left:${Math.min(a,b).toFixed(1)}px;width:${Math.abs(a-b).toFixed(1)}px"></i><i class=w6 style="left:${a.toFixed(1)}px"></i><i class=w12 style="left:${b.toFixed(1)}px"></i>`}
+    if(over(p))h+=`<i class="cap ${p>0?"hi":"lo"}"></i>`;else h+=`<i class=mk style="left:${X(p).toFixed(1)}px"></i>`;
+    return h+`</span>`};
+  $("rows").innerHTML=n?order.map(x=>{const m=mv[x.t];return`<tr data-t="${x.t}"${bk.has(x.t)?' class=bk':""}><td class=rk>${x.rk+1}</td><td class=tk><span>${x.t}</span></td><td class=sc>${rail(x)}<span class=v style="color:${colour(x.v)}">${fmt(x.v)}</span></td><td class="mc${m===null?" none":""}">${m===null?"\\u2014":mfmt(m)}</td></tr>`+
+    (x.rk in cutAfter?`<tr class=cut><td colspan=4><span>${cutAfter[x.rk]}</span></td></tr>`:"")}).join("")
+    :`<tr><td colspan=4 class=empty>${S.caps.size?"No names in the selected market caps.":"Select at least one market cap."}</td></tr>`;
+  // headers, tokens, summary
+  const arrow=k=>key===k?`<span class=arr>${dir==="desc"?"\\u2193":"\\u2191"}</span>`:"";
+  $("scoreh").innerHTML=`Score${arrow("score")}`;$("colh").innerHTML=`${COLS[col]}${arrow("col")}`;
+  $("sortscore").dataset.dir=key==="score"?dir:"";$("sortcol").dataset.dir=key==="col"?dir:"";
+  document.querySelectorAll("[data-pick]").forEach(x=>x.setAttribute("aria-checked",x.dataset.pick===col));
+  $("t-idx").textContent=S.idx.size===2?"500+400":"S&P "+[...S.idx][0];
+  $("t-caps").textContent=S.caps.size===BUCKETS.length?"all caps":S.caps.size?BUCKETS.filter(c=>S.caps.has(c)).join("+"):"no caps";
+  document.querySelectorAll("[data-cap]").forEach(x=>x.setAttribute("aria-pressed",S.caps.has(x.dataset.cap)));
+  $("t-win").textContent=wins.map(w=>w.toUpperCase()).join("+");
+  $("t-skip").textContent=S.skip?"skip "+SKIP:"no skip";$("t-skip").setAttribute("aria-pressed",S.skip);
+  $("t-vol").setAttribute("aria-pressed",S.vol);$("t-r2").setAttribute("aria-pressed",S.r2);
+  $("t-z").textContent=Z?"Z":"raw";$("t-z").setAttribute("aria-pressed",Z);
+  $("count").textContent=` · ${n} names${key==="score"?"":" · by "+COLS[col]+", cuts withdrawn"}`;
+  const demo=inner=>`<span class=rail style="--c:var(--pos)"><i class="ov l"></i><i class=tr></i><i class="ov r"></i><i class=tk style="left:8px"></i><i class="tk mid" style="left:28px"></i><i class=tk style="left:48px"></i>${inner}</span>`;
+  $("lgd").innerHTML=span===null?"":`<span>${demo('<i class=mk style="left:36px"></i>')}score on a P5\\u2192P95 axis, ticks at P5 P25 P50 P75 P95; the pale ends run on to ${Math.round(EXT*100)}% of that span before the cap</span>`+
+    (wins.length===2?`<span>${demo('<i class=ln style="left:20px;width:16px"></i><i class=w6 style="left:20px"></i><i class=w12 style="left:36px"></i><i class=mk style="left:28px"></i>')}short tick 6M, tall tick 12M, dot = blend</span>`:"")+
+    `<span>${demo('<i class="cap hi"></i>')}cap: beyond the rail</span>`;
+}
+// settings line
+const toggleSub=id=>{const nxt=openSub===id?null:id;document.querySelectorAll(".sub,.menu").forEach(x=>x.hidden=x.id!==nxt);
+  document.querySelectorAll("[aria-controls]").forEach(x=>x.setAttribute("aria-expanded",x.getAttribute("aria-controls")===nxt));openSub=nxt};
+$("t-idx").onclick=()=>{const cur=S.idx.size===2?"both":[...S.idx][0];const nxt={"500":["400"],"400":["500","400"],both:["500"]}[cur];S.idx=new Set(nxt);save();apply()};
+$("t-caps").onclick=()=>toggleSub("capsub");
+document.querySelectorAll("[data-cap]").forEach(x=>x.onclick=()=>{const c=x.dataset.cap;S.caps.has(c)?S.caps.delete(c):S.caps.add(c);save();apply()});
+$("t-win").onclick=()=>{const cur=S.wins.size===2?"both":[...S.wins][0];const nxt={"6m":["12m"],"12m":["6m","12m"],both:["6m"]}[cur];S.wins=new Set(nxt);save();apply()};
+$("t-skip").onclick=()=>{S.skip=!S.skip;save();apply()};
+$("t-vol").onclick=()=>{S.vol=!S.vol;save();apply()};
+$("t-r2").onclick=()=>{S.r2=!S.r2;save();apply()};
+$("t-z").onclick=()=>{S.disp=S.disp==="z"?"raw":"z";save();apply()};
+$("theme").onclick=()=>{S.theme={auto:"light",light:"dark",dark:"auto"}[S.theme];save();apply()};
+// headers: tap to sort (desc, asc, back to score order); the chevron opens the column picker
+$("sortscore").onclick=()=>{sort=sort==="score:desc"?"score:asc":"score:desc";store.set("lg.sort",sort);apply()};
+$("sortcol").onclick=()=>{sort=sort==="col:desc"?"col:asc":sort==="col:asc"?"score:desc":"col:desc";store.set("lg.sort",sort);apply()};
+$("pick").onclick=()=>toggleSub("colmenu");
+document.querySelectorAll("[data-pick]").forEach(x=>x.onclick=()=>{col=x.dataset.pick;store.set("lg.col",col);toggleSub(null);apply()});
+// refresh: the published data.json (live quotes arrive with the detail stage)
+let flashT=null;const flash=m=>{const a=$("asof");a.textContent=m;clearTimeout(flashT);flashT=setTimeout(()=>a.textContent="As of "+PAYLOAD.asOf,3500)};
+$("refresh").onclick=async()=>{const btn=$("refresh");if(btn.classList.contains("busy"))return;btn.classList.add("busy");
+  try{const r=await fetch("data.json?_="+Date.now(),{cache:"no-store"});if(!r.ok)throw new Error("HTTP "+r.status);const Q=await r.json();
+    if(Q.asOf===PAYLOAD.asOf)flash("Up to date · "+Q.asOf);else{setPayload(Q);apply();flash("Updated · "+Q.asOf)}}
+  catch(e){flash("Refresh failed · "+e.message)}finally{btn.classList.remove("busy")}};
+apply();
+"""
+
+
+def render_ledger_html(prices, caps, as_of, meta=None, dates=None, intra=None):
+    """Stage 1 of the ledger direction: the Rank screen only, from the same payload."""
+    payload = json.dumps(build_payload(prices, caps, as_of, meta, dates, intra), separators=(",", ":"))
+    buckets = [name for name, _ in CAP_BUCKETS]
+    consts = (f"let PAYLOAD={payload};const SKIP={SKIP},YEAR={TRADING_DAYS},WIN={json.dumps(WINDOWS)},"
+              f"BUCKETS={json.dumps(buckets)},PCTS=[95,75,50,25,5],BARS={BARS_PER_DAY},WINSOR={WINSOR};")
+    cap_buttons = "".join(f"<button data-cap={n}>{n.title()}</button>" for n in buckets)
+    picks = "".join(f'<button role=menuitemradio data-pick="{k}">{v[0]}</button>'
+                    for k, v in [("drank", ["\u0394Rank"]), ("today", ["Today"]), ("d5", ["5D"]), ("6m", ["6M"]),
+                                 ("12m", ["12M"]), ("vol", ["VolAdj"]), ("r2", ["R\u00b2"]), ("resid", ["Resid"])])
+    return f"""<!doctype html><html lang=en><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Return Ranker · Ledger</title>
+<link rel=preconnect href="https://fonts.googleapis.com"><link rel=preconnect href="https://fonts.gstatic.com" crossorigin>
+<link rel=stylesheet href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>{LEDGER_CSS}</style></head><body><main>
+<header class=mast><h1>Return Ranker</h1><div class=acts><button id=refresh>Refresh</button><button id=theme aria-label="Appearance">Auto</button></div>
+<p class=asof><span id=asof></span><span id=count></span></p></header>
+<div class=line role=group aria-label=Settings><span class=grp><button class=tok id=t-idx aria-pressed=true></button><span class=sep>·</span>
+<button class=tok id=t-caps aria-pressed=true aria-controls=capsub aria-expanded=false></button></span>
+<span class=grp><button class=tok id=t-win aria-pressed=true></button><span class=sep>·</span>
+<button class=tok id=t-skip></button><span class=sep>·</span>
+<button class=tok id=t-vol>VolAdj</button><span class=sep>·</span>
+<button class=tok id=t-r2>R&sup2;</button><span class=sep>·</span>
+<button class=tok id=t-z></button></span></div>
+<div class=sub id=capsub hidden role=group aria-label="Market cap">{cap_buttons}</div>
+<table id=tbl><thead><tr><th class="num rk">#</th><th>Ticker</th><th class="num sc"><button id=sortscore data-dir=desc><span id=scoreh></span></button></th>
+<th class="num mc"><button id=sortcol data-dir=""><span id=colh></span></button><button class=pick id=pick aria-controls=colmenu aria-expanded=false aria-label="Choose column">&#8964;</button>
+<div class=menu id=colmenu hidden role=menu aria-label="Column">{picks}</div></th></tr></thead>
+<tbody id=rows></tbody></table>
+<div class=legend id=lgd></div>
+<p class=note>The gutter is each name's score rank and stays fixed under any sort. Tap <b>Score</b> or the metric header to sort; the P95 · P75 · P50 · P25 · P5 cut lines are shown only while the list is in score order and remain as ticks on every rail otherwise. Settings are shared with the main page.</p>
+</main>
+<script>{consts}{JS_CORE}{LEDGER_JS}</script></body></html>"""
+
+
 def render_html(prices, caps, as_of, meta=None, dates=None, intra=None):
     """The page embeds each ticker's prices (not rounded returns) so the browser's
     scores match Python's exactly, plus its market-cap bucket."""
@@ -1231,7 +1463,7 @@ def render_html(prices, caps, as_of, meta=None, dates=None, intra=None):
 <div class=full><p class=lbl>Live quotes (FMP key)</p><div class=keyrow><input id=fmpkey type=password autocomplete=off spellcheck=false aria-label="FMP API key"><button class=pri id=keysave>Save</button><button id=keyclear>Clear</button></div><p class=keyst id=keyst></p></div>
 </div>
 </section>
-<script>{consts}{JS}</script></body></html>"""
+<script>{consts}{JS_CORE}{JS_APP}</script></body></html>"""
 
 
 def main():
@@ -1247,6 +1479,7 @@ def main():
     ap.add_argument("--html", metavar="PATH", help="also write the ranking as a static HTML page (+ data.json)")
     ap.add_argument("--no-intraday", action="store_true", help="skip the per-ticker intraday bars in --html")
     ap.add_argument("--pullback", action="store_true", help="also print the residual pullback table (industry-neutral, vol-scaled 21D)")
+    ap.add_argument("--ledger", metavar="PATH", help="also write the ledger prototype page (Rank screen only) from the same data")
     args = ap.parse_args()
     if not os.environ.get("FMP_API_KEY"):
         sys.exit("FMP_API_KEY is not set")
@@ -1273,6 +1506,9 @@ def main():
         out.write_text(render_html(prices, caps, as_of, meta, dates, intra))
         out.with_name("data.json").write_text(json.dumps(build_payload(prices, caps, as_of, meta, dates, intra),
                                                          separators=(",", ":")))
+    if args.ledger:
+        as_of = datetime.now(NY).strftime("%b %-d, %Y %-I:%M %p %Z")
+        Path(args.ledger).write_text(render_ledger_html(prices, caps, as_of, meta, dates, {}))
 
 
 if __name__ == "__main__":
