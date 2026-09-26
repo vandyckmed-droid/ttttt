@@ -676,6 +676,16 @@ function dragToDismiss(sheet) {
   };
   sheet.addEventListener('pointerup', end); sheet.addEventListener('pointercancel', end);
 }
+/** Appearance: 'auto' follows the device; 'light' / 'dark' pin it. Applied before first paint by a
+ *  one-line script in index.html; this keeps the buttons, the browser chrome colour and the pill in step. */
+function applyTheme() {
+  const t = store.get('theme', 'auto');
+  if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme;
+  document.querySelectorAll('#sheet-settings [data-theme]').forEach(b => b.setAttribute('aria-pressed', b.dataset.theme === t));
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.content = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#000';
+  layoutPills($('sheet-settings'));
+}
 function renderSettings() {
   const s = state.settings;
   document.querySelectorAll('[data-window]').forEach(b => b.setAttribute('aria-pressed', b.dataset.window === s.window));
@@ -1019,6 +1029,10 @@ function wire() {
   document.querySelectorAll('[data-factors]').forEach(b => b.onclick = () => setSettings({ factors: b.dataset.factors }));
   document.querySelectorAll('[data-flag]').forEach(i => i.onchange = () => setSettings({ [i.dataset.flag]: i.checked }));
   $('reset').onclick = () => setSettings({ ...DEFAULT_SETTINGS });
+  document.querySelectorAll('#sheet-settings [data-theme]').forEach(b => b.onclick = () => { store.set('theme', b.dataset.theme); applyTheme(); });
+  const scheme = matchMedia('(prefers-color-scheme: light)');
+  if (scheme.addEventListener) scheme.addEventListener('change', applyTheme);
+  applyTheme();
   document.querySelectorAll('[data-scope]').forEach(b => b.onclick = () => { state.scope.index = b.dataset.scope; recompute(); });
   $('filter-clear').onclick = () => { state.scope.group = null; state.prevPoolKey = ''; recompute(); const li = $('list').querySelector('li[data-t]'); if (li) li.focus({ preventScroll: true }); };
   $('search').oninput = e => { state.query = e.target.value; renderList(); };

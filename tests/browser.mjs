@@ -550,6 +550,42 @@ function mockFmp(page, { date = L, hh = 16, mm = 0, sessions = [], splits = {}, 
   await ctx.close();
 }
 
+// ---- 5h. appearance: auto follows the device, light / dark pin it -------------------------
+{
+  const { ctx, page, log } = await newPage();
+  const bg = () => page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+  const meta = () => page.evaluate(() => document.querySelector('meta[name="theme-color"]').content);
+  await page.emulateMedia({ colorScheme: 'light' });
+  await load(page);
+  check((await bg()) === 'rgb(255, 255, 255)' && (await meta()) === '#fff', `auto follows a light device (${await bg()}, theme-color ${await meta()})`);
+  await shot(page, 'rank-light');
+  const order = (await rows(page)).map(x => x.t).join(',');
+  await page.click('.list .row[data-t="NVDA"]'); await page.waitForSelector('#detail.on'); await page.waitForTimeout(400);
+  await shot(page, 'detail-light');
+  await page.click('#d-back'); await page.waitForTimeout(300);
+  await page.click('#btn-settings'); await page.waitForTimeout(400);
+  check((await page.getAttribute('#sheet-settings [data-theme="auto"]', 'aria-pressed')) === 'true', 'Auto is pressed by default');
+  await shot(page, 'settings-light');
+  await page.click('#sheet-settings [data-theme="dark"]'); await page.waitForTimeout(200);
+  check((await bg()) === 'rgb(0, 0, 0)' && (await meta()) === '#000' && (await page.evaluate(() => document.documentElement.dataset.theme)) === 'dark', 'Dark pins dark on a light device');
+  check((await rows(page)).map(x => x.t).join(',') === order, 'appearance never changes the ranking');
+  await page.click('#sheet-settings [data-close]'); await page.waitForTimeout(300);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  check((await page.evaluate(() => document.documentElement.dataset.theme)) === 'dark', 'the choice is applied before the app script runs (no flash)');
+  await page.waitForSelector('.list:not(.skeleton) .row');
+  check((await bg()) === 'rgb(0, 0, 0)', 'Dark persists across reload');
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await page.click('#btn-settings'); await page.waitForTimeout(400);
+  await page.click('#sheet-settings [data-theme="light"]'); await page.waitForTimeout(200);
+  check((await bg()) === 'rgb(255, 255, 255)', 'Light pins light on a dark device');
+  await page.click('#sheet-settings [data-theme="auto"]'); await page.waitForTimeout(200);
+  check((await bg()) === 'rgb(0, 0, 0)' && (await page.evaluate(() => !('theme' in document.documentElement.dataset) && localStorage.getItem('theme') === '"auto"')), 'Auto returns to the device setting');
+  await page.emulateMedia({ colorScheme: 'light' }); await page.waitForTimeout(200);
+  check((await bg()) === 'rgb(255, 255, 255)' && (await meta()) === '#fff', 'Auto follows a device change live');
+  check(log.fmp.length === 0 && log.errors.length === 0, `no requests, console clean: ${JSON.stringify(log.errors)}`);
+  await ctx.close();
+}
+
 // ---- 6. viewports --------------------------------------------------------------------------
 for (const [name, vp, mobile] of [['320', { width: 320, height: 640 }, true], ['430', { width: 430, height: 932 }, true], ['desktop', { width: 1280, height: 800 }, false]]) {
   const { ctx, page, log } = await newPage(vp, mobile);

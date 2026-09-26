@@ -3,9 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="color-scheme" content="dark">
+<meta name="color-scheme" content="dark light">
 <meta name="theme-color" content="#000000">
 <title>S&amp;P 900 Momentum</title>
+<script>try{var t=JSON.parse(localStorage.getItem("theme"));if(t==="light"||t==="dark")document.documentElement.dataset.theme=t}catch(e){}</script>
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
@@ -133,6 +134,14 @@
       </div>
     </div>
     <button class="link" id="reset" type="button">Reset to defaults</button>
+    <div class="opt appearance">
+      <div class="opt-text"><span class="opt-name">Appearance</span><span class="opt-desc">Auto follows your device.</span></div>
+      <div class="seg" role="group" aria-label="Appearance">
+        <button type="button" data-theme="auto">Auto</button>
+        <button type="button" data-theme="light">Light</button>
+        <button type="button" data-theme="dark">Dark</button>
+      </div>
+    </div>
   </div>
 </section>
 
