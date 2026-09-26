@@ -1198,17 +1198,16 @@ body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.35 "IBM Plex 
 main{max-width:560px;margin:0 auto;padding:14px 16px 40px}
 button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer;font-variant-numeric:tabular-nums}
 /* masthead */
-.mast{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding-bottom:10px;border-bottom:1px solid var(--ink)}
+.mast{display:grid;grid-template-columns:1fr auto;align-items:baseline;column-gap:12px;padding-bottom:10px;border-bottom:1px solid var(--ink)}
 .mast h1{font-size:24px;font-weight:600;letter-spacing:-.01em;margin:0;line-height:1.1}
-.mast .asof{margin:4px 0 0;font-size:13px;color:var(--muted)}
-.mast .acts{display:flex;gap:14px;flex:none;padding-top:5px;font-size:13px}
+.mast .asof{grid-column:1/-1;margin:4px 0 0;font-size:13px;color:var(--muted)}
+.mast .acts{display:flex;gap:14px;flex:none;font-size:13px}
 .mast .acts button{color:var(--muted);text-decoration:underline;text-decoration-color:var(--rule);text-underline-offset:3px}
 .mast .acts button.busy{color:var(--ink)}
 /* settings line: one sentence of tappable tokens */
 .line{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 18px;padding:8px 0;border-bottom:1px solid var(--rule);font-size:13px;color:var(--muted)}
 .line .grp{white-space:nowrap}.line .sep{padding:0 5px;color:var(--rule)}
-.line .count{margin-left:auto;font-size:12px}
-.tok{color:var(--muted);padding:2px 0;border-bottom:1px dashed transparent}
+.tok{color:var(--muted);padding:2px 0;border-bottom:1px solid transparent}
 .tok[aria-pressed=true]{color:var(--ink);border-bottom-color:var(--cut)}
 .tok[aria-expanded=true]{border-bottom-style:solid;border-bottom-color:var(--ink)}
 .sub{display:flex;gap:16px;padding:8px 0 8px 28px;border-bottom:1px solid var(--rule);font-size:13px}
@@ -1226,29 +1225,32 @@ th .pick[aria-expanded=true]{color:var(--ink);border-color:var(--ink)}
 .menu{position:absolute;right:0;top:100%;z-index:3;display:flex;flex-direction:column;align-items:flex-end;gap:2px;padding:8px 12px;background:var(--paper);border:1px solid var(--rule);box-shadow:0 6px 18px rgba(0,0,0,.08);font-size:14px;font-weight:400;text-align:right}
 .menu button{color:var(--muted);padding:4px 0;white-space:nowrap}.menu button[aria-checked=true]{color:var(--ink);border-bottom:1px solid var(--ink)}
 .menu[hidden]{display:none}
-tbody td{padding:0;height:38px;border-bottom:1px solid var(--rule);vertical-align:middle}
+tbody td{padding:0;height:36px;border-bottom:1px solid var(--rule);vertical-align:middle}
 tbody tr:active td{background:var(--hover)}
 td.rk{width:28px;padding-right:6px;text-align:right;font-size:12px;color:var(--muted)}
 td.tk{font-weight:500;letter-spacing:.01em}
 td.tk span{display:inline-block;padding:2px 4px;margin-left:-4px}
 tr.bk td.tk span{background:var(--tint)}
-td.sc{text-align:right;width:92px;padding-right:2px}
-td.sc .v{display:block;line-height:1.1}
+td.sc{text-align:right;width:118px;padding-right:2px}
+td.sc .v{display:inline-block;min-width:52px;text-align:right;vertical-align:middle}
 td.mc{text-align:right;width:72px;padding-left:10px}
 td.mc.none{color:var(--muted)}
-/* score rail: a 40px score axis from P5 (left) to P95 (right); percentile cuts are ticks */
-.rail{position:relative;display:inline-block;width:40px;height:9px;margin-top:3px;vertical-align:top}
+/* score rail: a score axis, P5 at 8px to P95 at 48px (percentile cuts are ticks), with an 8px overflow
+   zone at each end that keeps spreading names beyond P5/P95 until they cap at the edge */
+.rail{position:relative;display:inline-block;width:56px;height:9px;margin-right:8px;vertical-align:middle}
 .rail i{position:absolute;display:block}
-.rail .tr{left:0;right:0;top:4px;height:1px;background:var(--rule)}
+.rail .tr{left:8px;right:8px;top:4px;height:1px;background:var(--cut);opacity:.6}
+.rail .ov{top:4px;height:1px;width:8px;background:var(--rule)}.rail .ov.l{left:0}.rail .ov.r{right:0}
 .rail .tk{top:2px;width:1px;height:5px;background:var(--cut);opacity:.55}
 .rail .tk.mid{top:1px;height:7px;opacity:.8}
 .rail .mk{top:1.5px;width:6px;height:6px;margin-left:-3px;border-radius:50%;background:var(--c)}
-.rail .w6{top:0;width:1px;height:5px;margin-left:-.5px;background:var(--ink)}
-.rail .w12{top:0;width:1px;height:9px;margin-left:-.5px;background:var(--ink)}
-.rail .ln{top:4px;height:1px;background:var(--ink);opacity:.5}
+.rail .w6{top:0;width:1px;height:5px;margin-left:-.5px;background:var(--ink);opacity:.7}
+.rail .w12{top:0;width:1px;height:9px;margin-left:-.5px;background:var(--ink);opacity:.7}
+.rail .ln{top:4px;height:1px;background:var(--ink);opacity:.4}
+.rail .mk{z-index:1}
 .rail .cap{top:1.5px;width:0;height:0;border-top:3px solid transparent;border-bottom:3px solid transparent}
-.rail .cap.hi{right:-6px;border-left:5px solid var(--c)}
-.rail .cap.lo{left:-6px;border-right:5px solid var(--c)}
+.rail .cap.hi{right:-1px;border-left:5px solid var(--c)}
+.rail .cap.lo{left:-1px;border-right:5px solid var(--c)}
 /* cut lines: editorial section breaks, only while the list is score-ordered */
 tr.cut td{height:30px;border-bottom:1px solid var(--cut);border-top:1px solid var(--cut);padding:0}
 tr.cut td span{display:block;padding:7px 0 7px 0;font-size:11px;font-weight:500;letter-spacing:.08em;text-transform:uppercase;color:var(--cut);width:28px;text-align:right;padding-right:6px}
@@ -1257,7 +1259,7 @@ tr.cut + tr td{border-top:0}
 .note{margin:18px 0 0;font-size:12px;color:var(--muted);line-height:1.45}
 .note b{font-weight:500;color:var(--ink)}
 .legend{display:flex;gap:18px;flex-wrap:wrap;margin-top:10px;font-size:12px;color:var(--muted);align-items:center}
-.legend .rail{margin:0 6px 0 0;vertical-align:middle}
+.legend span>.rail{flex:none;margin:0 8px 0 0}.legend>span{display:flex;align-items:center}
 """
 
 LEDGER_JS = """
@@ -1305,13 +1307,16 @@ function apply(){
   else{const nv=v=>v===null?(dir==="desc"?-Infinity:Infinity):v;order.sort((a,c)=>dir==="desc"?nv(mv[c.t])-nv(mv[a.t]):nv(mv[a.t])-nv(mv[c.t]))}
   const cutAfter={};if(key==="score")for(const k of PCTS){const c=Math.round(n*(1-k/100));if(c>0&&c<n)cutAfter[dir==="desc"?c-1:c]="P"+k}
   const bk=new Set((BASKET&&BASKET.rows||[]).map(r=>r[0]));
-  const rail=x=>{if(span===null)return"";const p=pos(x.v),c=colour(x.v);let h=`<span class=rail style="--c:${c}"><i class=tr></i>`;
-    for(const k of PCTS)if(cut[k]!==null)h+=`<i class="tk${k===50?" mid":""}" style="left:${(100*pos(cut[k])).toFixed(1)}%"></i>`;
-    if(wins.length===2){const a=Math.min(1,Math.max(0,pos(x.w[0]))),b=Math.min(1,Math.max(0,pos(x.w[1])));
-      h+=`<i class=ln style="left:${(100*Math.min(a,b)).toFixed(1)}%;width:${(100*Math.abs(a-b)).toFixed(1)}%"></i><i class=w6 style="left:${(100*a).toFixed(1)}%"></i><i class=w12 style="left:${(100*b).toFixed(1)}%"></i>`}
-    if(p<0)h+=`<i class="cap lo"></i>`;else if(p>1)h+=`<i class="cap hi"></i>`;else h+=`<i class=mk style="left:${(100*p).toFixed(1)}%"></i>`;
+  // rail geometry: P5 at 8px, P95 at 48px; the 8px zones outside keep the linear scale (EXT of the span each) before capping
+  const MAIN=40,OV=8,EXT=.5;
+  const X=p=>p>=0&&p<=1?OV+p*MAIN:p>1?OV+MAIN+Math.min(1,(p-1)/EXT)*OV:OV-Math.min(1,-p/EXT)*OV,over=p=>p>1+EXT||p<-EXT;
+  const rail=x=>{if(span===null)return"";const p=pos(x.v),c=colour(x.v);let h=`<span class=rail style="--c:${c}"><i class="ov l"></i><i class=tr></i><i class="ov r"></i>`;
+    for(const k of PCTS)if(cut[k]!==null)h+=`<i class="tk${k===50?" mid":""}" style="left:${X(pos(cut[k])).toFixed(1)}px"></i>`;
+    if(wins.length===2){const a=X(pos(x.w[0])),b=X(pos(x.w[1]));
+      h+=`<i class=ln style="left:${Math.min(a,b).toFixed(1)}px;width:${Math.abs(a-b).toFixed(1)}px"></i><i class=w6 style="left:${a.toFixed(1)}px"></i><i class=w12 style="left:${b.toFixed(1)}px"></i>`}
+    if(over(p))h+=`<i class="cap ${p>0?"hi":"lo"}"></i>`;else h+=`<i class=mk style="left:${X(p).toFixed(1)}px"></i>`;
     return h+`</span>`};
-  $("rows").innerHTML=n?order.map(x=>{const m=mv[x.t];return`<tr data-t="${x.t}"${bk.has(x.t)?' class=bk':""}><td class=rk>${x.rk+1}</td><td class=tk><span>${x.t}</span></td><td class=sc><span class=v style="color:${colour(x.v)}">${fmt(x.v)}</span>${rail(x)}</td><td class="mc${m===null?" none":""}">${m===null?"\\u2014":mfmt(m)}</td></tr>`+
+  $("rows").innerHTML=n?order.map(x=>{const m=mv[x.t];return`<tr data-t="${x.t}"${bk.has(x.t)?' class=bk':""}><td class=rk>${x.rk+1}</td><td class=tk><span>${x.t}</span></td><td class=sc>${rail(x)}<span class=v style="color:${colour(x.v)}">${fmt(x.v)}</span></td><td class="mc${m===null?" none":""}">${m===null?"\\u2014":mfmt(m)}</td></tr>`+
     (x.rk in cutAfter?`<tr class=cut><td colspan=4><span>${cutAfter[x.rk]}</span></td></tr>`:"")}).join("")
     :`<tr><td colspan=4 class=empty>${S.caps.size?"No names in the selected market caps.":"Select at least one market cap."}</td></tr>`;
   // headers, tokens, summary
@@ -1326,10 +1331,11 @@ function apply(){
   $("t-skip").textContent=S.skip?"skip "+SKIP:"no skip";$("t-skip").setAttribute("aria-pressed",S.skip);
   $("t-vol").setAttribute("aria-pressed",S.vol);$("t-r2").setAttribute("aria-pressed",S.r2);
   $("t-z").textContent=Z?"Z":"raw";$("t-z").setAttribute("aria-pressed",Z);
-  $("count").textContent=`${n} names${key==="score"?"":" · by "+COLS[col]+", cuts withdrawn"}`;
-  $("lgd").innerHTML=span===null?"":`<span><span class=rail style="--c:var(--pos)"><i class=tr></i><i class=tk style="left:0"></i><i class="tk mid" style="left:50%"></i><i class=tk style="left:100%"></i><i class=mk style="left:70%"></i></span>score on a P5\\u2192P95 axis · ticks at P5 P25 P50 P75 P95</span>`+
-    (wins.length===2?`<span><span class=rail style="--c:var(--pos)"><i class=tr></i><i class=ln style="left:30%;width:40%"></i><i class=w6 style="left:30%"></i><i class=w12 style="left:70%"></i><i class=mk style="left:50%"></i></span>short tick 6M · tall tick 12M · dot blend</span>`:"")+
-    `<span><span class=rail style="--c:var(--neg)"><i class=tr></i><i class=tk style="left:0"></i><i class="tk mid" style="left:50%"></i><i class=tk style="left:100%"></i><i class="cap hi"></i></span>cap: beyond P95 / P5</span>`;
+  $("count").textContent=` · ${n} names${key==="score"?"":" · by "+COLS[col]+", cuts withdrawn"}`;
+  const demo=inner=>`<span class=rail style="--c:var(--pos)"><i class="ov l"></i><i class=tr></i><i class="ov r"></i><i class=tk style="left:8px"></i><i class="tk mid" style="left:28px"></i><i class=tk style="left:48px"></i>${inner}</span>`;
+  $("lgd").innerHTML=span===null?"":`<span>${demo('<i class=mk style="left:36px"></i>')}score on a P5\\u2192P95 axis, ticks at P5 P25 P50 P75 P95; the pale ends run on to ${Math.round(EXT*100)}% of that span before the cap</span>`+
+    (wins.length===2?`<span>${demo('<i class=ln style="left:20px;width:16px"></i><i class=w6 style="left:20px"></i><i class=w12 style="left:36px"></i><i class=mk style="left:28px"></i>')}short tick 6M, tall tick 12M, dot = blend</span>`:"")+
+    `<span>${demo('<i class="cap hi"></i>')}cap: beyond the rail</span>`;
 }
 // settings line
 const toggleSub=id=>{const nxt=openSub===id?null:id;document.querySelectorAll(".sub,.menu").forEach(x=>x.hidden=x.id!==nxt);
@@ -1374,15 +1380,15 @@ def render_ledger_html(prices, caps, as_of, meta=None, dates=None, intra=None):
 <link rel=preconnect href="https://fonts.googleapis.com"><link rel=preconnect href="https://fonts.gstatic.com" crossorigin>
 <link rel=stylesheet href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap">
 <style>{LEDGER_CSS}</style></head><body><main>
-<header class=mast><div><h1>Return Ranker</h1><p class=asof id=asof></p></div>
-<div class=acts><button id=refresh>Refresh</button><button id=theme aria-label="Appearance">Auto</button></div></header>
+<header class=mast><h1>Return Ranker</h1><div class=acts><button id=refresh>Refresh</button><button id=theme aria-label="Appearance">Auto</button></div>
+<p class=asof><span id=asof></span><span id=count></span></p></header>
 <div class=line role=group aria-label=Settings><span class=grp><button class=tok id=t-idx aria-pressed=true></button><span class=sep>·</span>
 <button class=tok id=t-caps aria-pressed=true aria-controls=capsub aria-expanded=false></button></span>
 <span class=grp><button class=tok id=t-win aria-pressed=true></button><span class=sep>·</span>
 <button class=tok id=t-skip></button><span class=sep>·</span>
 <button class=tok id=t-vol>VolAdj</button><span class=sep>·</span>
 <button class=tok id=t-r2>R&sup2;</button><span class=sep>·</span>
-<button class=tok id=t-z></button></span><span class=count id=count></span></div>
+<button class=tok id=t-z></button></span></div>
 <div class=sub id=capsub hidden role=group aria-label="Market cap">{cap_buttons}</div>
 <table id=tbl><thead><tr><th class="num rk">#</th><th>Ticker</th><th class="num sc"><button id=sortscore data-dir=desc><span id=scoreh></span></button></th>
 <th class="num mc"><button id=sortcol data-dir=""><span id=colh></span></button><button class=pick id=pick aria-controls=colmenu aria-expanded=false aria-label="Choose column">&#8964;</button>
