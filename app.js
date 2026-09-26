@@ -124,7 +124,6 @@ function rebuild() {
 }
 
 // ---- ranking -------------------------------------------------------------------
-const poolKey = () => `${state.scope.index}|${state.scope.group || ''}|${JSON.stringify(state.settings)}`;
 function pool() {
   const { index, group } = state.scope;
   return state.model.stocks.filter(s => (index === 'all' || s.i === index) && (!group || s.g === group)).map(s => s.t);

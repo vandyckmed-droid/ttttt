@@ -25,11 +25,24 @@ const afterToast = async (page, action, extra = '', timeout = 20000) => {
 const shot = (page, name) => SHOTS ? page.screenshot({ path: `${SHOTS}/${name}.png` }) : Promise.resolve();
 const nyTs = (date, hh, mm) => Math.floor(new Date(`${date}T${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:00-04:00`).getTime() / 1000);
 
+// Behind a TLS-intercepting proxy (e.g. a sandbox) Chromium may not reach a remote BASE: with
+// PW_CURL_TRANSPORT=1 the page's requests to BASE are carried by curl (which trusts the proxy)
+// and fulfilled verbatim, so the browser still executes exactly what the server sends.
 const browser = await chromium.launch();
+const { execFileSync } = await import('node:child_process');
+async function curlTransport(page) {
+  if (!process.env.PW_CURL_TRANSPORT || BASE.startsWith('http://127.0.0.1') || BASE.startsWith('http://localhost')) return;
+  await page.route(new URL(BASE).origin + '/**', route => {
+    const out = execFileSync('curl', ['-sS', '-w', '\n%{http_code}\n%{content_type}', route.request().url()], { maxBuffer: 64e6 });
+    const txt = out.toString('latin1'), j = txt.lastIndexOf('\n'), i = txt.lastIndexOf('\n', j - 1);
+    route.fulfill({ status: +txt.slice(i + 1, j), contentType: txt.slice(j + 1) || 'application/octet-stream', body: out.subarray(0, i) });
+  });
+}
 
 async function newPage(viewport = { width: 390, height: 844 }, mobile = true) {
   const ctx = await browser.newContext({ viewport, deviceScaleFactor: 2, isMobile: mobile, hasTouch: mobile });
   const page = await ctx.newPage();
+  await curlTransport(page);
   const log = { errors: [], fmp: [] };
   page.on('console', m => { if (['error', 'warning'].includes(m.type())) log.errors.push(`${m.type()}: ${m.text()}`); });
   page.on('pageerror', e => log.errors.push('pageerror: ' + e.message));

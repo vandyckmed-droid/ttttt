@@ -20,7 +20,7 @@ export const MODEL = Object.freeze({
   WINSOR: 0.01,              // z-score display clips at the 1st / 99th percentile
 });
 
-export const LEVELS = ['peer', 'sector', 'universe'];
+const LEVELS = ['peer', 'sector', 'universe'];
 
 export const DEFAULT_SETTINGS = Object.freeze({
   window: 'blend',           // '6m' | '12m' | 'blend' (equal-weight 6m + 12m)
@@ -213,7 +213,7 @@ export function windowScore(m, fit, settings, M = MODEL) {
   return score;
 }
 
-export function windowsFor(settings, M = MODEL) {
+function windowsFor(settings) {
   return settings.window === 'blend' ? ['6m', '12m'] : [settings.window];
 }
 
@@ -228,13 +228,13 @@ export function scoreStock(model, t, settings) {
   if (!r || !fit) return { score: null, parts: {} };
   const skip = settings.skip ? M.SKIP : 0, parts = {};
   let total = 0, ok = true;
-  for (const w of windowsFor(settings, M)) {
+  for (const w of windowsFor(settings)) {
     const m = momentum(r, fit.bench, fit.beta, model.T, M.WINDOWS[w], skip, settings.residual);
     const score = windowScore(m, fit, settings, M);
     parts[w] = { ...(m || {}), score };
     if (score === null || score !== score) ok = false; else total += score;
   }
-  const ws = windowsFor(settings, M);
+  const ws = windowsFor(settings);
   return { score: ok ? total / ws.length : null, parts };
 }
 
