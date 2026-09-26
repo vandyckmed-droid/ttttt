@@ -1,0 +1,293 @@
+// End-to-end drive of the page in headless Chromium with FMP mocked.
+//   python3 -m http.server 8000 &  (from the repo root)
+//   NODE_PATH=/path/to/node_modules node tests/browser.mjs [http://127.0.0.1:8000/] [shots-dir]
+// Exits non-zero on any failed check. Screenshots go to shots-dir when given.
+import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
+import { decodePrices } from '../model.js';
+const { chromium } = createRequire(import.meta.url)('playwright');
+
+const BASE = process.argv[2] || 'http://127.0.0.1:8000/';
+const SHOTS = process.argv[3] || '';
+const seed = JSON.parse(readFileSync(new URL('../data/history.json', import.meta.url)));
+const universe = JSON.parse(readFileSync(new URL('../data/universe.json', import.meta.url)));
+const lastClose = Object.fromEntries(Object.entries(seed.px).map(([t, c]) => { const p = decodePrices(c); return [t, p[p.length - 1]]; }));
+const L = seed.dates[seed.dates.length - 1];
+const QB = Math.ceil(universe.stocks.length / 100);   // quote batches per refresh
+let failures = 0;
+const check = (ok, msg) => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${msg}`); if (!ok) failures++; };
+const afterToast = async (page, action, extra = '', timeout = 20000) => {
+  await page.evaluate(() => { document.getElementById('toast').hidden = true; });   // clear any previous toast
+  await action();
+  await page.waitForSelector(`.toast:not([hidden])${extra}`, { timeout });
+  return page.textContent('#toast');
+};
+const shot = (page, name) => SHOTS ? page.screenshot({ path: `${SHOTS}/${name}.png` }) : Promise.resolve();
+const nyTs = (date, hh, mm) => Math.floor(new Date(`${date}T${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:00-04:00`).getTime() / 1000);
+
+const browser = await chromium.launch();
+
+async function newPage(viewport = { width: 390, height: 844 }, mobile = true) {
+  const ctx = await browser.newContext({ viewport, deviceScaleFactor: 2, isMobile: mobile, hasTouch: mobile });
+  const page = await ctx.newPage();
+  const log = { errors: [], fmp: [] };
+  page.on('console', m => { if (['error', 'warning'].includes(m.type())) log.errors.push(`${m.type()}: ${m.text()}`); });
+  page.on('pageerror', e => log.errors.push('pageerror: ' + e.message));
+  page.on('request', r => { if (r.url().includes('financialmodelingprep')) log.fmp.push(r.url()); });
+  return { ctx, page, log };
+}
+async function load(page) {
+  await page.goto(BASE, { waitUntil: 'networkidle' });
+  await page.waitForSelector('.list:not(.skeleton) .row');
+}
+const rows = page => page.locator('.list .row').evaluateAll(els => els.map(e => ({ t: e.dataset.t, rk: e.querySelector('.rk').textContent, v: e.querySelector('.sc').textContent, sub: e.querySelector('.sub').textContent })));
+const noOverflow = page => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1);
+
+/** Mock FMP for a scenario: quote session date/time, optional history gap dates, optional error mode. */
+function mockFmp(page, { date = L, hh = 16, mm = 0, sessions = [], splits = {}, mode = 'ok', keySeen }) {
+  const calls = { quote: 0, history: 0, historyFrom: {}, hist429: 0 };
+  return page.route('https://financialmodelingprep.com/**', route => {
+    const u = new URL(route.request().url());
+    if (keySeen) keySeen.push(u.searchParams.get('apikey'));
+    if (mode === '401') return route.fulfill({ status: 401, body: '{"Error Message":"Invalid API KEY"}' });
+    if (mode === 'abort') return route.abort('failed');
+    if (mode === '429once' && calls.hist429 === 0) { calls.hist429++; return route.fulfill({ status: 429, body: 'Limit Reach' }); }
+    if (u.pathname.endsWith('/batch-quote')) {
+      calls.quote++;
+      const syms = u.searchParams.get('symbols').split(',');
+      return route.fulfill({ json: syms.map(s => ({ symbol: s, price: +((lastClose[s] || 50) * (splits[s] || 1.01)).toFixed(2), previousClose: lastClose[s] || 50, timestamp: nyTs(date, hh, mm) })) });
+    }
+    if (u.pathname.endsWith('/historical-price-eod/light')) {
+      calls.history++;
+      const s = u.searchParams.get('symbol'), from = u.searchParams.get('from'), to = u.searchParams.get('to') || '9999';
+      calls.historyFrom[s] = from;
+      const all = [...seed.dates, ...sessions].filter(d => d >= from && d <= to);
+      const base = (lastClose[s] || 50) * (splits[s] || 1);
+      return route.fulfill({ json: all.map(d => ({ symbol: s, date: d, price: +(base * (1 + (d > L ? 0.002 : 0))).toFixed(2), volume: 1 })).reverse() });
+    }
+    return route.fulfill({ status: 404, body: '[]' });
+  }).then(() => calls);
+}
+
+// ---- 1. ranking screen, settings, displays ----------------------------------------------
+{
+  const { ctx, page, log } = await newPage();
+  await load(page);
+  check(log.fmp.length === 0, 'no FMP request on load');
+  check(await noOverflow(page), 'no horizontal overflow at 390px');
+  let r = await rows(page);
+  check(r.length > 850, `ranked rows: ${r.length}`);
+  check(/^[+−]\d+\.\d%$/.test(r[0].v), `raw value format: ${r[0].v}`);
+  check((await page.textContent('#status-text')).includes('not refreshed'), 'status says not refreshed');
+  await shot(page, 'rank-390');
+  const before = r.map(x => x.t).join(',');
+
+  await page.click('#btn-settings');
+  await page.waitForSelector('#sheet-settings.on');
+  await shot(page, 'settings-390');
+  await page.click('[data-flag="residual"]');
+  r = await rows(page);
+  check(r.map(x => x.t).join(',') !== before, 'residual re-ranks immediately');
+  check((await page.locator('.mv').count()) > 0, 'rank-move badges shown after a settings change');
+  check((await page.textContent('#chips')).includes('Residual'), 'chip shows Residual');
+  await page.click('[data-flag="vol"]');
+  r = await rows(page);
+  check(/^[+−]\d+\.\d\d$/.test(r[0].v), `vol-adjusted value is a ratio: ${r[0].v}`);
+  await page.click('[data-flag="r2"]');
+  check((await page.textContent('#chips')).includes('R²'), 'chip shows R²');
+  await page.click('[data-flag="skip"]');
+  check(!(await page.textContent('#chips')).includes('Skip'), 'skip off removes chip');
+  await page.click('[data-window="6m"]');
+  check((await page.textContent('#chips')).startsWith('6M'), 'window chip 6M');
+  const rawOrder = (await rows(page)).map(x => x.t).join(',');
+  for (const [d, re] of [['z', /^[+−]\d\.\d\d$/], ['pct', /^\d+%$/], ['rank', /^#\d+$/]]) {
+    await page.click(`[data-display="${d}"]`);
+    const rr = await rows(page);
+    check(re.test(rr[0].v), `display ${d}: ${rr[0].v}`);
+    check(rr.map(x => x.t).join(',') === rawOrder, `display ${d} keeps the order`);
+  }
+  await page.click('[data-display="pct"]');
+  const rp = await rows(page);
+  check(rp[0].v === '100%' && rp[rp.length - 1].v === '0%', 'percentile spans 100% .. 0%');
+  await page.click('#reset');
+  check((await page.textContent('#chips')).startsWith('6M+12M') && (await page.textContent('#chips')).includes('Skip 21'), 'reset restores defaults');
+  await page.click('#sheet-settings [data-close]');
+  await page.waitForTimeout(350);
+  // settings persist across reload
+  await page.click('#btn-settings'); await page.click('[data-flag="residual"]'); await page.click('#sheet-settings [data-close]');
+  await page.reload({ waitUntil: 'networkidle' }); await page.waitForSelector('.list:not(.skeleton) .row');
+  check((await page.textContent('#chips')).includes('Residual'), 'settings persist across reload');
+  check(log.fmp.length === 0, 'still no FMP request after reload');
+
+  // scope + search
+  await page.click('[data-scope="400"]');
+  r = await rows(page);
+  check(r.length > 350 && r.length < 402, `S&P 400 scope ranks ${r.length}`);
+  check(r[0].rk === '1', 'ranks restart at 1 in the filtered pool');
+  await page.click('[data-scope="all"]');
+  await page.fill('#search', 'micro');
+  r = await rows(page);
+  check(r.length > 0 && r.length < 20 && r.some(x => x.t === 'MU'), `search "micro" -> ${r.map(x => x.t).join(' ')}`);
+  await page.fill('#search', 'FDXF');
+  r = await rows(page);
+  check(r.length === 1 && r[0].v === '—' && /sessions of history/.test(r[0].sub), `excluded name shows reason: ${r[0] && r[0].sub}`);
+  await page.fill('#search', '');
+  check(log.errors.length === 0, `console clean: ${JSON.stringify(log.errors)}`);
+  await ctx.close();
+}
+
+// ---- 2. ticker detail -----------------------------------------------------------------
+{
+  const { ctx, page, log } = await newPage();
+  await load(page);
+  await page.click('.list .row[data-t="MU"]');
+  await page.waitForSelector('#detail.on');
+  check((await page.textContent('#d-ticker')) === 'MU', 'detail opens MU');
+  check((await page.evaluate(() => location.hash)) === '#MU', 'hash routes to ticker');
+  check(/\$\d/.test(await page.textContent('.d-price')), 'price shown');
+  check((await page.locator('#chart path.ln').count()) === 1, 'chart drawn');
+  await shot(page, 'detail-mu');
+  for (const h of ['1M', '3Y']) {
+    await page.click(`[data-hz="${h}"]`);
+    check((await page.locator(`[data-hz="${h}"]`).getAttribute('aria-pressed')) === 'true' && /–/.test(await page.textContent('#hzl')), `horizon ${h}`);
+  }
+  await page.click('#bench-toggle');
+  check((await page.locator('#chart path.bl').count()) === 1, 'benchmark overlay drawn');
+  await shot(page, 'detail-mu-bench');
+  await page.hover('#chart svg', { position: { x: 200, y: 100 } });
+  check(!(await page.locator('#tip').isHidden()), 'hover readout');
+  const reg = await page.textContent('.page-body');
+  check(/Peer group benchmark/.test(reg) && /Semiconductors/.test(reg) && /Beta/.test(reg) && /R²/.test(reg) && /Observations/.test(reg), 'regression card: peer benchmark, beta, R², observations');
+  check(/#\d+ of \d+/.test(reg) && /percentile/.test(reg), 'rank and percentile shown');
+  // sector fallback diagnostics
+  await page.click('#d-back'); await page.waitForTimeout(350);
+  await page.fill('#search', 'VZ'); await page.click('.list .row[data-t="VZ"]'); await page.waitForSelector('#detail.on');
+  const vz = await page.textContent('.page-body');
+  check(/Sector benchmark/.test(vz) && /only 5 peers/.test(vz), 'VZ falls back to the sector benchmark with the reason');
+  await shot(page, 'detail-vz');
+  // no viable regression
+  await page.click('#d-back'); await page.waitForTimeout(350);
+  await page.fill('#search', 'FDXF'); await page.click('.list .row[data-t="FDXF"]'); await page.waitForSelector('#detail.on');
+  const fx = await page.textContent('.page-body');
+  check(/No viable benchmark/.test(fx) && /Not ranked/.test(fx), 'FDXF: no benchmark and not ranked, explained');
+  // peer-group filter from the company card
+  await page.click('#d-back'); await page.waitForTimeout(350);
+  await page.fill('#search', ''); await page.click('.list .row[data-t="NVDA"]'); await page.waitForSelector('#detail.on');
+  await page.click('#peers-link'); await page.waitForTimeout(350);
+  const r = await rows(page);
+  check(r.length > 25 && r.length < 40 && !(await page.locator('#filter').isHidden()), `peer filter shows ${r.length} semiconductor names`);
+  await shot(page, 'peers-filter');
+  await page.click('#filter-clear');
+  check((await rows(page)).length > 850, 'filter cleared');
+  // browser back closes the detail
+  await page.click('.list .row[data-t="AMD"]'); await page.waitForSelector('#detail.on');
+  await page.goBack(); await page.waitForTimeout(350);
+  check(!(await page.locator('#detail').evaluate(e => e.classList.contains('on'))), 'browser back closes detail');
+  check(log.errors.length === 0, `console clean: ${JSON.stringify(log.errors)}`);
+  check(log.fmp.length === 0, 'no FMP request while browsing details');
+  await ctx.close();
+}
+
+// ---- 3. refresh: no key, key entry, same-session refresh, persistence ---------------------
+{
+  const { ctx, page, log } = await newPage();
+  await load(page);
+  await page.click('#btn-refresh');
+  await page.waitForSelector('#sheet-data.on');
+  check(await page.locator('#do-refresh').isDisabled(), 'refresh disabled without a key');
+  check(/Add your FMP key/.test(await page.textContent('#refresh-note')), 'no-key message');
+  await shot(page, 'data-nokey');
+  check(log.fmp.length === 0, 'no FMP request without a key');
+  await page.click('#key-save');
+  check(/Paste a key/.test(await page.textContent('#key-note')), 'empty key rejected');
+  await page.fill('#key', 'test-key-1234'); await page.click('#key-save');
+  check(!(await page.locator('#do-refresh').isDisabled()), 'refresh enabled after saving a key');
+  check((await page.textContent('#data-facts')).includes('test…'), 'key shown masked');
+  const keySeen = [];
+  const calls = await mockFmp(page, { keySeen });
+  await page.click('#do-refresh');
+  await page.waitForFunction(() => /^Updated/.test(document.getElementById('refresh-note').textContent), null, { timeout: 15000 });
+  const toast = await page.textContent('#refresh-note');
+  check(toast.includes(`${QB} requests`), `same-session refresh result: ${toast}`);
+  check(await page.locator('#toast').isHidden(), 'no toast while the data sheet shows the result');
+  check(await page.locator('#refresh-progress').isHidden(), 'progress bar hidden after completion');
+  check(calls.quote === QB && calls.history === 0, `requests: ${calls.quote} quote batches, ${calls.history} history`);
+  check(keySeen.every(k => k === 'test-key-1234'), 'key sent only to FMP requests');
+  check(/updated just now/.test(await page.textContent('#status-text')), 'status shows updated');
+  await shot(page, 'data-refreshed');
+  await page.click('#sheet-data [data-close]'); await page.waitForTimeout(300);
+  const mu = await page.locator('.list .row[data-t="MU"] .sc').textContent();
+  await page.reload({ waitUntil: 'networkidle' }); await page.waitForSelector('.list:not(.skeleton) .row');
+  check(/updated/.test(await page.textContent('#status-text')), 'refreshed state persists across reload');
+  check((await page.locator('.list .row[data-t="MU"] .sc').textContent()) === mu, 'persisted prices reproduce the ranking');
+  check(log.fmp.length === QB, `total FMP requests in this session: ${log.fmp.length} (no automatic refresh on reload)`);
+  await page.click('#status'); await page.click('#key-clear');
+  check(await page.locator('#do-refresh').isDisabled(), 'clearing the key disables refresh');
+  check(log.errors.length === 0, `console clean: ${JSON.stringify(log.errors)}`);
+  await ctx.close();
+}
+
+// ---- 4. refresh: next session (append), split detection, multi-session gap ----------------
+{
+  const { ctx, page, log } = await newPage();
+  await page.addInitScript(() => localStorage.setItem('fmpKey', JSON.stringify('k')));
+  await load(page);
+  const T0 = await page.evaluate(() => document.querySelectorAll('.list .row').length);
+  const calls = await mockFmp(page, { date: '2026-09-28', hh: 10, mm: 30, sessions: ['2026-09-28'], splits: { AAPL: 0.25 } });
+  const toast = await afterToast(page, () => page.click('#btn-refresh'));
+  check(/Sep 28 10:30 AM/.test(toast) && toast.includes(`${QB + 2} requests`), `next-session live refresh: ${toast}`);
+  check(calls.quote === QB && calls.history === 2 && calls.historyFrom.AAPL === seed.dates[0], `1 reference call + 1 full re-download for the split (${JSON.stringify(calls.historyFrom)})`);
+  check(/Sep 28 live/.test(await page.textContent('#status-text')), 'status marks intraday prices');
+  await page.unroute('https://financialmodelingprep.com/**');
+  // a 3-session gap: per-name history for every ticker
+  const calls2 = await mockFmp(page, { date: '2026-10-02', hh: 16, mm: 0, sessions: ['2026-09-28', '2026-09-29', '2026-09-30', '2026-10-01', '2026-10-02'], splits: { AAPL: 0.25 } });
+  const toast2 = await afterToast(page, () => page.click('#btn-refresh'), '', 60000);
+  check(/Oct 2 close/.test(toast2), `gap refresh: ${toast2}`);
+  check(calls2.quote === QB && calls2.history === universe.stocks.length + 1, `gap refresh requests: ${calls2.quote} + ${calls2.history} (1 reference + ${universe.stocks.length} names)`);
+  check(Math.abs((await page.evaluate(() => document.querySelectorAll('.list .row').length)) - T0) < 10, 'ranking still covers the universe');
+  check(log.errors.length === 0, `console clean: ${JSON.stringify(log.errors)}`);
+  await ctx.close();
+}
+
+// ---- 5. refresh failures ------------------------------------------------------------------
+{
+  const { ctx, page, log } = await newPage();
+  await page.addInitScript(() => localStorage.setItem('fmpKey', JSON.stringify('bad')));
+  await load(page);
+  await mockFmp(page, { mode: '401' });
+  await page.click('#btn-refresh');
+  await page.waitForSelector('#sheet-data.on');
+  check(/rejected/.test(await page.textContent('#key-note')) && /rejected the API key/.test(await page.textContent('#refresh-note')), 'invalid key: data sheet opens with the error');
+  await shot(page, 'refresh-badkey');
+  check(/not refreshed/.test(await page.textContent('#status-text')), 'failed refresh leaves data untouched');
+  await page.click('#sheet-data [data-close]');
+  await page.unroute('https://financialmodelingprep.com/**');
+  await mockFmp(page, { mode: 'abort' });
+  check(/Network error/.test(await afterToast(page, () => page.click('#btn-refresh'))), 'network failure reported');
+  await page.unroute('https://financialmodelingprep.com/**');
+  const calls = await mockFmp(page, { mode: '429once' });
+  check(/Updated/.test(await afterToast(page, () => page.click('#btn-refresh'), '.ok', 30000)) && calls.hist429 === 1, 'rate limit retried once then succeeded');
+  const unexpected = log.errors.filter(e => !/Failed to load resource/.test(e));   // the mocked 401/429/abort log themselves
+  check(unexpected.length === 0, `console clean apart from the provoked failures: ${JSON.stringify(unexpected)}`);
+  await ctx.close();
+}
+
+// ---- 6. viewports --------------------------------------------------------------------------
+for (const [name, vp, mobile] of [['320', { width: 320, height: 640 }, true], ['430', { width: 430, height: 932 }, true], ['desktop', { width: 1280, height: 800 }, false]]) {
+  const { ctx, page, log } = await newPage(vp, mobile);
+  await load(page);
+  check(await noOverflow(page), `no horizontal overflow at ${name}`);
+  await shot(page, `rank-${name}`);
+  await page.click('.list .row[data-t="NVDA"]'); await page.waitForSelector('#detail.on');
+  check(await noOverflow(page), `detail: no horizontal overflow at ${name}`);
+  await shot(page, `detail-${name}`);
+  await page.click('#d-back'); await page.waitForTimeout(300);
+  await page.click('#btn-settings'); await page.waitForTimeout(350);
+  await shot(page, `settings-${name}`);
+  check(log.errors.length === 0, `console clean at ${name}: ${JSON.stringify(log.errors)}`);
+  await ctx.close();
+}
+
+await browser.close();
+console.log(failures ? `\n${failures} check(s) FAILED` : '\nall checks passed');
+process.exit(failures ? 1 : 0);

@@ -1,0 +1,36 @@
+name: Rebuild data bundle
+
+# Manual maintenance only (never scheduled): rebuilds data/universe.json and the
+# seed data/history.json with the repository's FMP_API_KEY secret and commits
+# them to main, which then publishes. Choose `universe`, `history` or `all`.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "universe | history | all"
+        default: all
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build
+        env:
+          FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
+        run: python3 tools/build_data.py "${{ github.event.inputs.target }}"
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/universe.json data/history.json
+          git diff --cached --quiet && echo "no change" || git commit -m "Rebuild data bundle (${{ github.event.inputs.target }})"
+          git push

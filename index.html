@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#000000">
+<title>S&amp;P 900 Momentum</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.34-5.66" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M20 4v5h-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-tune" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2.5"/><circle cx="10" cy="17" r="2.5"/></g></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4-4"/></g></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
+    <symbol id="i-chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  </defs>
+</svg>
+
+<div class="app" id="app">
+  <header class="top">
+    <div class="brand">
+      <h1>Momentum</h1>
+      <button class="status" id="status" type="button" aria-label="Data status and refresh">
+        <span id="status-text">Loading S&amp;P 900…</span><svg class="chev"><use href="#i-chev"/></svg>
+      </button>
+    </div>
+    <div class="actions">
+      <button class="icon" id="btn-refresh" type="button" aria-label="Refresh prices" title="Refresh prices"><svg><use href="#i-refresh"/></svg></button>
+      <button class="icon" id="btn-settings" type="button" aria-label="Model settings" title="Model settings"><svg><use href="#i-tune"/></svg></button>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="dist" aria-label="Score distribution">
+      <div class="dist-head">
+        <button class="chips" id="chips" type="button" aria-label="Active model settings; opens settings"></button>
+        <span class="dist-n" id="dist-n"></span>
+      </div>
+      <div class="histo" id="hist"></div>
+    </section>
+
+    <div class="toolbar" id="toolbar">
+      <label class="search">
+        <svg><use href="#i-search"/></svg>
+        <input id="search" type="search" placeholder="Search" autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false" aria-label="Search ticker or company">
+      </label>
+      <div class="seg scope" role="group" aria-label="Universe">
+        <button type="button" data-scope="all" aria-pressed="true">900</button>
+        <button type="button" data-scope="500" aria-pressed="false">500</button>
+        <button type="button" data-scope="400" aria-pressed="false">400</button>
+      </div>
+    </div>
+    <div class="filter" id="filter" hidden>
+      <span id="filter-text"></span>
+      <button class="icon small" id="filter-clear" type="button" aria-label="Clear group filter"><svg><use href="#i-close"/></svg></button>
+    </div>
+
+    <ol class="list" id="list" aria-label="Ranked stocks"></ol>
+    <p class="foot" id="foot"></p>
+  </main>
+</div>
+
+<!-- Ticker detail -->
+<section class="page" id="detail" aria-hidden="true" role="dialog" aria-labelledby="d-ticker">
+  <header class="page-top">
+    <button class="icon" id="d-back" type="button" aria-label="Back to ranking"><svg><use href="#i-back"/></svg></button>
+    <span class="page-title" id="d-ticker"></span>
+    <span class="page-spacer"></span>
+  </header>
+  <div class="page-body" id="d-body"></div>
+</section>
+
+<!-- Settings sheet -->
+<div class="backdrop" id="backdrop" hidden></div>
+<section class="sheet" id="sheet-settings" role="dialog" aria-modal="true" aria-labelledby="settings-title" hidden>
+  <div class="grab" aria-hidden="true"></div>
+  <header class="sheet-top"><h2 id="settings-title">Model</h2><button class="icon small" data-close type="button" aria-label="Close"><svg><use href="#i-close"/></svg></button></header>
+  <div class="sheet-body">
+    <div class="opt">
+      <div class="opt-text"><span class="opt-name">Window</span><span class="opt-desc">Cumulative daily log return over the last 126 or 252 sessions, annualized. 6M+12M averages both.</span></div>
+      <div class="seg" role="group" aria-label="Momentum window">
+        <button type="button" data-window="6m">6M</button>
+        <button type="button" data-window="12m">12M</button>
+        <button type="button" data-window="blend">6M+12M</button>
+      </div>
+    </div>
+    <label class="opt row">
+      <div class="opt-text"><span class="opt-name">Skip last 21 sessions</span><span class="opt-desc">Measurement stops 21 sessions before the latest price.</span></div>
+      <input type="checkbox" class="switch" data-flag="skip">
+    </label>
+    <label class="opt row">
+      <div class="opt-text"><span class="opt-name">Residual momentum</span><span class="opt-desc">Subtract β × the leave-one-out peer benchmark (peer group → sector → S&amp;P 900) over the same sessions.</span></div>
+      <input type="checkbox" class="switch" data-flag="residual">
+    </label>
+    <label class="opt row">
+      <div class="opt-text"><span class="opt-name">Volatility adjusted</span><span class="opt-desc">Divide by the annualized realized volatility of the same daily series.</span></div>
+      <input type="checkbox" class="switch" data-flag="vol">
+    </label>
+    <label class="opt row">
+      <div class="opt-text"><span class="opt-name">× R²</span><span class="opt-desc">Multiply by the R² of the stock's 3-year regression on its benchmark.</span></div>
+      <input type="checkbox" class="switch" data-flag="r2">
+    </label>
+    <div class="opt">
+      <div class="opt-text"><span class="opt-name">Display</span><span class="opt-desc">Same ranking shown as raw score, winsorized z-score, percentile (100 = top) or rank.</span></div>
+      <div class="seg" role="group" aria-label="Display">
+        <button type="button" data-display="raw">Raw</button>
+        <button type="button" data-display="z">Z</button>
+        <button type="button" data-display="pct">%</button>
+        <button type="button" data-display="rank">Rank</button>
+      </div>
+    </div>
+    <button class="link" id="reset" type="button">Reset to defaults</button>
+  </div>
+</section>
+
+<!-- Data & key sheet -->
+<section class="sheet" id="sheet-data" role="dialog" aria-modal="true" aria-labelledby="data-title" hidden>
+  <div class="grab" aria-hidden="true"></div>
+  <header class="sheet-top"><h2 id="data-title">Data</h2><button class="icon small" data-close type="button" aria-label="Close"><svg><use href="#i-close"/></svg></button></header>
+  <div class="sheet-body">
+    <dl class="facts" id="data-facts"></dl>
+    <button class="primary" id="do-refresh" type="button">Refresh prices</button>
+    <p class="note" id="refresh-note"></p>
+    <h3>FMP API key</h3>
+    <div class="keyrow">
+      <input id="key" type="password" placeholder="Paste your Financial Modeling Prep key" autocomplete="off" spellcheck="false" aria-label="FMP API key">
+      <button class="secondary" id="key-save" type="button">Save</button>
+      <button class="secondary" id="key-clear" type="button">Clear</button>
+    </div>
+    <p class="note" id="key-note"></p>
+  </div>
+</section>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+<script type="module" src="app.js"></script>
+</body>
+</html>
