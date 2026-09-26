@@ -40,7 +40,6 @@ from zoneinfo import ZoneInfo
 BASE = "https://financialmodelingprep.com/stable"
 LOOKBACK = 252
 SKIP = 21
-LAG = 21  # extra sessions published so the page can re-rank as of LAG sessions ago
 TRADING_DAYS = 252  # annualization factor
 WINDOWS = {"12m": LOOKBACK, "6m": 126}
 # Market-cap buckets (name, floor in USD), largest first. The S&P 500 may have
@@ -312,7 +311,7 @@ def load_prices(top=None):
     for s in symbols:
         if s not in quotes or not histories[s]:
             continue
-        series = price_series(histories[s], quotes[s])[-(LOOKBACK + LAG + 1):]
+        series = price_series(histories[s], quotes[s])[-(LOOKBACK + 1):]
         if len(series) < 2:
             continue
         if len(series) <= LOOKBACK:
@@ -376,50 +375,9 @@ CSS = f"""
 :root[data-theme=light]{{{LIGHT}}}
 """ + """*{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.4 -apple-system,BlinkMacSystemFont,"Inter","Segoe UI",system-ui,sans-serif}
-:root{--tabh:calc(52px + env(safe-area-inset-bottom))}
-main{max-width:560px;margin:0 auto;padding:12px 16px calc(var(--tabh) + 16px)}
-.open main{padding-bottom:calc(var(--sheet-h,50vh) + var(--tabh) + 16px)}  /* keep the content scrollable above the sheet */
+main{max-width:560px;margin:0 auto;padding:12px 16px 24px}
+.open main{padding-bottom:calc(var(--sheet-h,50vh) + 16px)}  /* keep the content scrollable above the sheet */
 /* Bottom tab bar: Rank (the list) and Lab (experiments) */
-.tabs{position:fixed;left:0;right:0;bottom:0;z-index:15;height:var(--tabh);padding-bottom:env(safe-area-inset-bottom);
-  background:var(--sheet);border-top:1px solid var(--line);display:flex;justify-content:center;gap:8px}
-.tabs button{flex:1;max-width:280px;border:0;background:none;color:var(--muted);font:inherit;font-size:12px;font-weight:500;cursor:pointer;
-  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px}
-.tabs button .ico{font-size:20px;line-height:1}
-.tabs button[aria-selected=true]{color:var(--fg)}
-body[data-tab=lab] #ranktab,body:not([data-tab=lab]) #lab{display:none}
-/* Lab: 21-day cumulative log-return heatmap */
-.labh{margin:6px 0 10px}.labh h2{font-size:17px;margin:0}.labh p{margin:2px 0 0;color:var(--muted);font-size:13px}
-.hm{display:grid;grid-template-columns:3.9em repeat(var(--cols,21),1fr) 4.6em;gap:2px;font-size:12px;font-variant-numeric:tabular-nums;position:relative}
-.hm .rl{color:var(--fg);font-weight:500;display:flex;align-items:center;cursor:pointer;padding-right:4px;overflow:hidden;white-space:nowrap}
-.hm .rv{color:var(--muted);display:flex;align-items:center;justify-content:flex-end;padding-left:4px}
-.hm .cl{color:var(--muted);font-size:10px;text-align:center;overflow:visible;white-space:nowrap}
-.hm .c{height:18px;border-radius:3px;background:var(--chip)}
-.hm.dense{gap:1px}.hm.dense .c{border-radius:1px}
-.hm .c.on{outline:2px solid var(--fg);outline-offset:-1px}
-.lg{display:flex;align-items:center;gap:8px;margin:12px 0 0;font-size:12px;color:var(--muted)}
-.lg .bar{flex:1;height:10px;border-radius:5px;background:linear-gradient(90deg,var(--neg),var(--chip),var(--pos))}
-/* Correlation matrix + dendrogram */
-.cm{display:grid;grid-template-columns:44px 3.9em repeat(var(--n,1),1fr);gap:1px;font-size:12px;position:relative;align-items:stretch}
-.cm .cl{writing-mode:vertical-rl;transform:rotate(180deg);font-size:9px;color:var(--muted);text-align:left;line-height:1;padding:2px 0;height:40px;overflow:hidden}
-.cm .c{height:16px;border-radius:2px;background:var(--chip);min-width:0}
-.cm .c.self{background:var(--line)}
-.cm .c.on{outline:2px solid var(--fg);outline-offset:-1px}
-.cm .rl{height:16px;line-height:16px;font-weight:500;cursor:pointer;overflow:hidden;padding-right:3px;white-space:nowrap}
-.cm .dg{grid-column:1;position:relative}
-.cm .dg svg{position:absolute;inset:0;width:100%;height:100%}
-.cm .dg path{fill:none;stroke:var(--muted);stroke-width:1.2}
-.labsec{margin-top:26px}
-.tm{position:relative;width:100%;aspect-ratio:1/1;margin:10px 0 0;border-radius:12px;overflow:hidden}
-.tm .t{position:absolute;box-sizing:border-box;border:2px solid var(--bg);border-radius:6px;overflow:hidden;cursor:pointer;
-  display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;line-height:1.15;color:var(--fg);text-shadow:var(--tshadow)}
-.tm .t b{font-size:13px}.tm .t small{font-size:11px;opacity:.85}
-.tm .t.xs b{font-size:10px}.tm .t.xs small{display:none}
-.tm .t.on{outline:2px solid var(--fg);outline-offset:-3px}
-.bkrow{display:grid;grid-template-columns:3.6em 1fr;gap:8px;align-items:center;margin-top:8px}.bkrow .lbl{margin:0}
-.segsm button{font-size:12px;padding:5px 0}
-#bk{margin-top:4px}#bk tr.muted td{color:var(--muted)}#bk td{padding:9px 14px}#bk th{padding:8px 14px}
-.hmtip{position:absolute;z-index:3;background:var(--sheet);border:1px solid var(--line);border-radius:8px;padding:4px 8px;font-size:12px;
-  white-space:nowrap;pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,.12);transform:translate(-50%,-110%)}
 header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:4px 0 12px}
 h1{font-size:22px;font-weight:700;letter-spacing:-.01em;margin:0}
 .gear{flex:none;width:40px;height:40px;border:0;border-radius:12px;background:var(--chip);color:var(--fg);cursor:pointer;display:grid;place-items:center}
@@ -492,7 +450,7 @@ tbody tr[data-t]{cursor:pointer}tbody tr[data-t]:active td{background:var(--chip
 .dnote{color:var(--muted);font-size:12px;margin:14px 0 0}
 /* Compact, non-modal settings panel: no dimming, the table stays visible and
    scrollable above it so rank moves can be watched while toggling. */
-.sheet{position:fixed;left:0;right:0;bottom:var(--tabh);max-width:560px;margin:0 auto;background:var(--sheet);border-radius:18px 18px 0 0;
+.sheet{position:fixed;left:0;right:0;bottom:0;max-width:560px;margin:0 auto;background:var(--sheet);border-radius:18px 18px 0 0;
   padding:8px 14px calc(12px + env(safe-area-inset-bottom));max-height:55vh;overflow:auto;transform:translateY(105%);transition:transform .25s ease;
   box-shadow:0 -6px 24px rgba(0,0,0,.18);border-top:1px solid var(--line)}
 .open .sheet{transform:none}
@@ -521,8 +479,7 @@ const $=id=>document.getElementById(id),b=document.body;
 // [ticker, cap bucket, daily log returns, {d1: latest change vs prior close,
 //  d5: 5-trading-day log return ln(P_now / P_5 sessions ago)}]
 let DATA,META,DATES,INTRA,R,PX={};
-let BASKET=null;
-function setPayload(P){PAYLOAD=P;DATA=P.data;META=P.meta||{};DATES=P.dates||[];INTRA=P.intra||{};BASKET=P.basket||null;PX={};
+function setPayload(P){PAYLOAD=P;DATA=P.data;META=P.meta||{};DATES=P.dates||[];INTRA=P.intra||{};PX={};
   R=DATA.map(([t,c,p,ix])=>{const L=p.length;PX[t]=p;return[t,c,p.slice(1).map((v,i)=>Math.log(v/p[i])),
     {d1:p[L-1]/p[L-2]-1,d5:L>5?Math.log(p[L-1]/p[L-6]):null},ix||"500"]});
   $("asof").textContent="As of "+P.asOf;}
@@ -553,37 +510,7 @@ if(!S.wins.size)S.wins.add("12m");if(!S.idx.size)S.idx.add("500");
 const save=()=>{store.set("theme",S.theme);store.set("idx",[...S.idx].join(","));store.set("caps",[...S.caps].join(","));store.set("wins",[...S.wins].join(","));store.set("vol",S.vol?"1":"0");store.set("r2",S.r2?"1":"0");store.set("skip",S.skip?"1":"0");store.set("disp",S.disp);store.set("today",S.today?"1":"0");store.set("dmode",S.dmode)};
 // Rank-move badges: after a settings change, rows whose rank moved show a
 // temporary ▲n / ▼n next to the ticker (CSS fades them out).
-let prevRank=null,lastRank={},labNames=[],lastScoreOf=null,lastPoolRaw=[];
-let bsize=store.get("bsize","w")==="r"?"r":"w";  // basket treemap tile size: weight, or risk share w·σ
-// basket treemap tile colour: score, rank change over LAG sessions, mean correlation with the
-// rest of the basket, or risk contribution vs weight
-const BCOL={score:"Score",drank:"\\u0394Rank",resid:"Resid",corr:"Corr",risk:"Risk%"},LAG=21,CORRW=126;
-let bcol=store.get("bcol","score");if(!(bcol in BCOL))bcol="score";
-let lastPool=[],applyN=0,lagCache=null,pbCache=null;
-// Residual pullback (mirrors residual_pullback()): eps_t = r_t - leave-one-out mean of the peer
-// group (>= MIN_PEERS other eligible names in the current pool, else the sector); resid21 = sum of
-// eps over the last PULL_W sessions; sigma = SD of eps over the PULL_VOL sessions before that;
-// pullback = -resid21 / (sigma * sqrt(PULL_W)). Raw and benchmark returns are kept for audit.
-const PULL_W=21,PULL_VOL=126,MIN_PEERS=5;
-function pullbacks(){if(pbCache&&pbCache.n===applyN)return pbCache;const need=PULL_W+PULL_VOL;
-  const names=lastPool.filter(([,,r])=>r.length>=need).map(([t,,r])=>[t,r.slice(-need)]);
-  const grp={},sec={},cls={},tail={};
-  for(const [t,r] of names){const m=META[t]||[],g=m[3]||"",sc=m[1]||"";cls[t]=[g,sc];tail[t]=r;if(g)(grp[g]=grp[g]||[]).push(t);(sec[sc]=sec[sc]||[]).push(t)}
-  const sums={},acc=(key,members)=>{const s=new Float64Array(need);for(const t of members){const r=tail[t];for(let i=0;i<need;i++)s[i]+=r[i]}sums[key]=[s,members.length]};
-  for(const g in grp)acc("g:"+g,grp[g]);for(const sc in sec)acc("s:"+sc,sec[sc]);
-  const out={};
-  for(const [t,r] of names){const [g,sc]=cls[t];let key=null,label="none";
-    if(g&&grp[g].length-1>=MIN_PEERS){key="g:"+g;label="group"}else if(sec[sc].length>1){key="s:"+sc;label="sector"}
-    let bench,peers=0;if(key){const [tot,n]=sums[key];bench=r.map((v,i)=>(tot[i]-v)/(n-1));peers=n-1}else bench=r.map(()=>0);
-    const eps=r.map((v,i)=>v-bench[i]),hist=eps.slice(0,PULL_VOL),mu=hist.reduce((a,v)=>a+v,0)/hist.length;
-    const sigma=Math.sqrt(hist.reduce((a,v)=>a+(v-mu)**2,0)/(hist.length-1));
-    const resid21=eps.slice(PULL_VOL).reduce((a,v)=>a+v,0),raw21=r.slice(PULL_VOL).reduce((a,v)=>a+v,0);
-    out[t]={raw21,bench21:raw21-resid21,resid21,sigma,pullback:-resid21/(Math.max(sigma,1e-6)*Math.sqrt(PULL_W)),benchmark:label,peerGroup:label==="group"?g:label==="sector"?sc:null,peers}}
-  Object.keys(out).sort((a,c)=>out[c].pullback-out[a].pullback).forEach((t,i)=>out[t].rank=i+1);
-  pbCache={n:applyN,out,total:names.length};return pbCache}
-const CW={"1M":21,"3M":63,"6M":126,"1Y":252};let cw=store.get("cw","3M");if(!(cw in CW))cw="3M";let lastCorr=null;
-let lw=store.get("lw","1M");if(!(lw in CW))lw="1M";  // cumulative heatmap window; 1M is daily, longer windows weekly
-let lv=store.get("lv","1")!=="0";  // heatmap cells: VolAdj of the running window (default) or raw cumulative return
+let prevRank=null,lastRank={};
 const fmtDate=d=>{const [y,m,dd]=d.split("-");return new Date(+y,m-1,+dd).toLocaleDateString(undefined,{month:"short",day:"numeric"})};
 function apply(){
   const skip=S.skip?SKIP:0,vol=S.vol,wins=["6m","12m"].filter(w=>S.wins.has(w));
@@ -641,13 +568,10 @@ function apply(){
   const mv=t=>{if(!prevRank||!(t in prevRank))return"";const d=prevRank[t]-rk[t];
     return d?`<span class="mv ${d>0?"mv-up":"mv-dn"}">${d>0?"\\u25b2":"\\u25bc"}${Math.abs(d)}</span>`:""};
   lastRank={};ranked.forEach(([t,v],i)=>lastRank[t]=[i,fmt(v,i)]);
-  lastScoreOf=r=>{const c=wins.map(w=>score(r,WIN[w],skip,vol,S.r2));return c.includes(null)?null:c.reduce((a,v)=>a+v,0)/c.length};
-  lastPoolRaw=rows.map(([,c])=>c.reduce((a,v)=>a+v,0)/c.length).sort((a,c)=>a-c);lastPool=pool;applyN++;
   $("rows").innerHTML=n?order.map(([t,v,i])=>`<tr data-t="${t}"${line[i]?" class=q":""}><td>${t}${mv(t)}</td><td class=num style="color:${grad(i)}">${fmt(v,i)}</td>${S.today?day(chg[t]):""}</tr>`+
     (line[i]?`<tr class=qr><td><div class=ql>${line[i]}</div></td>`+`<td><div class=ql></div></td>`.repeat(ncol-1)+`</tr>`:"")).join("")
     :`<tr><td colspan=${ncol} class=empty>${S.caps.size?"No stocks in the selected market caps.":"Select at least one market cap."}</td></tr>`;
   prevRank=rk;
-  labNames=ranked.slice(0,Math.round(n*0.05)).map(([t])=>t);renderLab();
 }
 document.querySelectorAll("[data-cap]").forEach(x=>x.onclick=()=>{const c=x.dataset.cap;S.caps.has(c)?S.caps.delete(c):S.caps.add(c);save();apply()});
 document.querySelectorAll("[data-idx]").forEach(x=>x.onclick=()=>{const c=x.dataset.idx;if(S.idx.has(c)){if(S.idx.size>1)S.idx.delete(c)}else S.idx.add(c);save();apply()});
@@ -678,163 +602,6 @@ document.querySelectorAll("[data-r2]").forEach(x=>x.onclick=()=>{S.r2=x.dataset.
 document.querySelectorAll("[data-vol]").forEach(x=>x.onclick=()=>{S.vol=x.dataset.vol==="1";save();apply()});
 document.querySelectorAll("[data-skip]").forEach(x=>x.onclick=()=>{S.skip=x.dataset.skip==="1";save();apply()});
 apply();
-// ---- Lab: cumulative 21-day log return, day by day, for every name above P95.
-function renderLab(){const el=$("hm");if(!el)return;const W=CW[lw],step=W>21?5:1,nc=Math.round(W/step);
-  document.querySelectorAll("[data-lw]").forEach(x=>x.setAttribute("aria-pressed",x.dataset.lw===lw));
-  document.querySelectorAll("[data-lv]").forEach(x=>x.setAttribute("aria-pressed",(x.dataset.lv==="1")===lv));
-  $("labttl").textContent=`${lw} cumulative ${lv?"vol-adjusted":"log"} return`;
-  const names=labNames.filter(t=>PX[t]&&PX[t].length>W);
-  $("labsub").textContent=names.length?`${names.length} names above P95 · ${lv?"Σr / (σ√N) of the daily log returns":"log return"} since the close ${W} sessions ago, ${step===1?"daily":"at each week's end"} · ${$("sum").textContent}`:"No names above P95 with enough history.";
-  if(!names.length){el.innerHTML="";renderCorr([]);return}
-  // column k ends step*(nc-1-k) sessions before the latest (last column = latest price); a cell is the
-  // running cumulative log return from the window start to that session, or VolAdj of those same daily returns
-  const rows=names.map(t=>{const p=PX[t],L=p.length,base=p[L-1-W],r=p.slice(L-1-W).map((v,i,a)=>i?Math.log(v/a[i-1]):0).slice(1);
-    return[t,Array.from({length:nc},(_,k)=>{const end=W-(nc-1-k)*step;return lv?(volAdj(r.slice(0,end))??0):Math.log(p[L-1-(nc-1-k)*step]/base)})]});
-  const all=rows.flatMap(r=>r[1].map(Math.abs)).sort((a,c)=>a-c),vmax=all[Math.floor(all.length*.95)]||1e-9;
-  const ds=Array.from({length:nc},(_,k)=>DATES[DATES.length-1-(nc-1-k)*step]);
-  const col=v=>`color-mix(in oklab,var(${v>=0?"--pos":"--neg"}) ${Math.round(Math.min(1,Math.abs(v)/vmax)*100)}%,var(--chip))`;
-  const p=v=>lv?(v>=0?"+":"−")+Math.abs(v).toFixed(2):(v>=0?"+":"−")+Math.abs(v*100).toFixed(1)+"%";
-  el.style.setProperty("--cols",nc);el.classList.toggle("dense",nc>30);
-  const every=nc>30?Math.ceil(nc/8):5;
-  el.innerHTML=`<div></div>`+ds.map((d,i)=>`<div class=cl>${i%every===0||i===nc-1?fmtDate(d).replace(/^\w+ /,""):""}</div>`).join("")+`<div class=cl>${lw}</div>`+
-    rows.map(([t,cs])=>`<div class=rl data-t="${t}">${t}</div>`+cs.map((v,i)=>`<div class=c data-t="${t}" data-i="${i}" style="background:${col(v)}" title="${t} ${fmtDate(ds[i])} ${p(v)}"></div>`).join("")+`<div class=rv style="color:${cs[cs.length-1]>=0?"var(--pos)":"var(--neg)"}">${p(cs[cs.length-1])}</div>`).join("");
-  $("lgmin").textContent=lv?"−"+vmax.toFixed(2):"−"+(vmax*100).toFixed(0)+"%";$("lgmax").textContent=lv?"+"+vmax.toFixed(2):"+"+(vmax*100).toFixed(0)+"%";
-  el.onclick=e=>{const c=e.target.closest(".c"),r=e.target.closest(".rl");if(r){showDetail(r.dataset.t);return}
-    el.querySelectorAll(".c.on").forEach(x=>x.classList.remove("on"));const old=el.querySelector(".hmtip");if(old)old.remove();
-    if(!c)return;c.classList.add("on");const t=c.dataset.t,i=+c.dataset.i,v=rows.find(r=>r[0]===t)[1][i];
-    const tip=document.createElement("div");tip.className="hmtip";tip.innerHTML=`${t} · ${fmtDate(ds[i])} · <b>${p(v)}</b>`;
-    tip.style.left=(c.offsetLeft+c.offsetWidth/2)+"px";tip.style.top=c.offsetTop+"px";el.appendChild(tip)};
-  renderCorr(names);renderBasket()}
-// ---- Basket: tickers + weights from basket.json, with each name's rank in the
-// current pool (ranks come from the last apply()).
-// Squarified treemap (Bruls et al.): items sorted by area desc, areas in px².
-function squarify(items,x,y,w,h,out){if(!items.length)return;const side=Math.min(w,h);
-  const worst=row=>{const sum=row.reduce((a,i)=>a+i.a,0),mx=Math.max(...row.map(i=>i.a)),mn=Math.min(...row.map(i=>i.a));return Math.max(side*side*mx/(sum*sum),sum*sum/(side*side*mn))};
-  const row=[items[0]];let k=1;while(k<items.length&&worst(row.concat([items[k]]))<=worst(row))row.push(items[k++]);
-  const sum=row.reduce((a,i)=>a+i.a,0);
-  if(w>=h){const cw=sum/h;let cy=y;for(const i of row){const ch=i.a/cw;out.push({...i,x,y:cy,w:cw,h:ch});cy+=ch}squarify(items.slice(k),x+cw,y,w-cw,h,out)}
-  else{const ch=sum/w;let cx=x;for(const i of row){const cw=i.a/ch;out.push({...i,x:cx,y,w:cw,h:ch});cx+=cw}squarify(items.slice(k),x,y+ch,w,h-ch,out)}}
-function renderTreemap(rows){const box=$("tm");if(!box)return;const W=box.clientWidth||358,H=W;
-  document.querySelectorAll("[data-bsize]").forEach(x=>x.setAttribute("aria-pressed",x.dataset.bsize===bsize));
-  // names we have data for: score under the current settings, σ = SD of the trailing daily log returns (up to 1Y)
-  const items=rows.filter(([t])=>t in PX).map(([t,w])=>{const p=PX[t],r=p.slice(1).map((v,i)=>Math.log(v/p[i])).slice(-YEAR);
-    const m=r.reduce((a,v)=>a+v,0)/r.length,sd=Math.sqrt(r.reduce((a,v)=>a+(v-m)**2,0)/(r.length-1));
-    return{t,w,sd,score:lastScoreOf?lastScoreOf(p.slice(1).map((v,i)=>Math.log(v/p[i]))):null}});
-  if(!items.length){box.innerHTML="";return}
-  const wsum=items.reduce((a,i)=>a+i.w,0),rsum=items.reduce((a,i)=>a+i.w*i.sd,0);
-  for(const i of items){i.wshare=i.w/wsum;i.rshare=i.w*i.sd/rsum;i.size=bsize==="r"?i.rshare:i.wshare;i.a=i.size*W*H}
-  document.querySelectorAll("[data-bcol]").forEach(x=>x.setAttribute("aria-pressed",x.dataset.bcol===bcol));
-  // Score colour: where the score would sit in the current pool (same green→neutral→red scale as the table)
-  const n=lastPoolRaw.length,pct=v=>{if(v===null||!n)return .5;let lo=0,hi=n;while(lo<hi){const mid=(lo+hi)>>1;if(lastPoolRaw[mid]<v)lo=mid+1;else hi=mid}return n>1?lo/n:.5};
-  const colq=q=>{const end=q>=.5?"--pos":"--neg";return`color-mix(in oklab,var(${end}) ${Math.round(Math.sqrt(Math.abs(q-.5)*2)*100)}%,var(--chip))`};
-  // Other modes: a signed value per name, green positive / red negative, saturating at vmax
-  const colv=(v,vmax,ease)=>{if(v===null)return"var(--chip)";let k=Math.min(1,Math.abs(v)/vmax);if(ease)k=Math.sqrt(k);return`color-mix(in oklab,var(${v>=0?"--pos":"--neg"}) ${Math.round(k*100)}%,var(--chip))`};
-  const rets=t=>{const p=PX[t];return p.slice(1).map((v,i)=>Math.log(v/p[i]))};
-  // ΔRank: the same scoring on the pool as it stood LAG sessions ago (cached per apply()).
-  if(bcol==="drank"&&(!lagCache||lagCache.n!==applyN)){const now=[],lag=[];
-    for(const [t,,r] of lastPool){const a=lastScoreOf(r),b=lastScoreOf(r.slice(0,r.length-LAG));if(a!==null)now.push([t,a]);if(b!==null)lag.push([t,b])}
-    const rk=arr=>{const o={};arr.sort((x,y)=>y[1]-x[1]).forEach(([t,v],i)=>o[t]=[i,v]);return o};const N=rk(now),Lg=rk(lag);
-    // dispersion of rank moves across the whole pool: the colour scale saturates at one SD
-    const dv=Object.keys(N).filter(t=>t in Lg).map(t=>Lg[t][0]-N[t][0]),sd=dv.length>1?Math.sqrt(dv.reduce((a,v)=>a+v*v,0)/dv.length):1;lagCache={n:applyN,now:N,lag:Lg,sd:Math.max(1,sd)}}
-  // Corr / Risk%: daily log returns of these names over the trailing CORRW sessions (aligned on the latest close)
-  let cov=null;if(bcol==="corr"||bcol==="risk"){const L=Math.min(CORRW,...items.map(i=>PX[i.t].length-1)),X=items.map(i=>rets(i.t).slice(-L));
-    const mu=X.map(x=>x.reduce((a,v)=>a+v,0)/L);cov=X.map((x,a)=>X.map((y,b)=>{let s=0;for(let k=0;k<L;k++)s+=(x[k]-mu[a])*(y[k]-mu[b]);return s/(L-1)}))}
-  let desc,vmax=1,fmtv=v=>v.toFixed(2);
-  for(const i of items){const lg=lagCache&&lagCache.lag[i.t],nw=lagCache&&lagCache.now[i.t];i.v=null;i.lbl="";
-    if(bcol==="drank"){if(lg&&nw){i.v=lg[0]-nw[0];i.lbl=`rank ${nw[0]+1} (was ${lg[0]+1})`}}
-    else if(bcol==="resid"){const pb=pullbacks(),p=pb.out[i.t];if(p){const f=v=>(v>=0?"+":"−")+Math.abs(v*100).toFixed(1)+"%";i.v=-p.pullback;
-      i.lbl=`resid 21D ${p.pullback>=0?"pullback":"run-up"} ${Math.abs(p.pullback).toFixed(2)}σ · raw ${f(p.raw21)} vs ${p.benchmark==="none"?"no benchmark":p.peerGroup+" "+f(p.bench21)+" ("+p.peers+" peers)"} · pullback rank ${p.rank} of ${pb.total}`}}
-    else if(bcol==="corr"){const a=items.indexOf(i);let s=0;for(let b=0;b<items.length;b++)if(b!==a)s+=cov[a][b]/Math.sqrt(cov[a][a]*cov[b][b]);
-      const rho=items.length>1?s/(items.length-1):0;i.rho=rho;i.lbl=`mean ρ with the others ${rho.toFixed(2)}`}
-    else if(bcol==="risk"){const a=items.indexOf(i),w=items.map(x=>x.wshare);let pv=0,mc=0;for(let b=0;b<items.length;b++){mc+=w[b]*cov[a][b];for(let c=0;c<items.length;c++)pv+=w[b]*w[c]*cov[b][c]}
-      const rc=pv?w[a]*mc/pv:w[a];i.rc=rc;i.v=-Math.log(Math.max(1e-6,rc/w[a]));i.lbl=`risk contribution ${(100*rc).toFixed(1)}% vs weight ${(100*w[a]).toFixed(1)}%`}}
-  if(bcol==="drank"){vmax=lagCache.sd;desc=`rank change over the last ${LAG} sessions under the current settings (green = moved up; full colour at one SD of the pool's rank moves, ±${Math.round(vmax)})`}
-  else if(bcol==="resid"){vmax=2;desc=`21-session residual return vs the name's peer group (leave-one-out mean; sector if under ${MIN_PEERS} peers in the pool), scaled by its own residual σ from the prior ${PULL_VOL} sessions: green beat its peers, red pulled back (full colour at ±2σ)`}
-  else if(bcol==="corr"){const mr=items.reduce((a,i)=>a+i.rho,0)/items.length;for(const i of items)i.v=mr-i.rho;vmax=Math.max(1e-9,...items.map(i=>Math.abs(i.v)));
-    desc=`mean correlation of daily returns with the other basket names over the trailing ${CORRW} sessions, against the basket average ρ̄ = ${mr.toFixed(2)} (red = more correlated than average, the same bet held again; saturates at ±${vmax.toFixed(2)})`}
-  else if(bcol==="risk"){vmax=Math.log(2);desc=`share of basket variance explained (w·Σw), relative to weight: red contributes more risk than its weight, green less (saturates at 2× / ½×)`}
-  else desc="score under the current settings, on the ranking's percentile scale";
-  items.sort((a,c)=>c.a-a.a);const out=[];squarify(items,0,0,W,H,out);
-  box.innerHTML=out.map(i=>`<div class="t${i.w<48||i.h<34?" xs":""}" data-t="${i.t}" style="left:${i.x}px;top:${i.y}px;width:${i.w}px;height:${i.h}px;background:${bcol==="score"?colq(pct(i.score)):colv(i.v,vmax,bcol==="drank")}"><b>${i.t}</b><small>${(100*i.size).toFixed(1)}%</small></div>`).join("");
-  $("tmsub").textContent=`${items.length} of ${rows.length} names have data · size = ${bsize==="r"?"risk share w·σ (σ = trailing 1Y daily)":"weight, renormalised over these names"} · colour = ${desc}`;
-  box.onclick=e=>{const d=e.target.closest(".t");box.querySelectorAll(".t.on").forEach(x=>x.classList.remove("on"));const old=$("bksec").querySelector(".hmtip");if(old)old.remove();
-    if(!d)return;d.classList.add("on");const i=items.find(x=>x.t===d.dataset.t),lr=lastRank[i.t];
-    const tip=document.createElement("div");tip.className="hmtip";tip.style.position="static";tip.style.transform="none";tip.style.display="block";tip.style.whiteSpace="normal";tip.style.marginTop="6px";
-    tip.innerHTML=`<b>${i.t}</b> · weight ${(100*i.wshare).toFixed(1)}% · risk share ${(100*i.rshare).toFixed(1)}% · σ ${(i.sd*Math.sqrt(YEAR)*100).toFixed(0)}% ann. · score ${i.score===null?"n/a":i.score.toFixed(2)}${lr?` · rank #${lr[0]+1}`:" · not in current pool"}${i.lbl?` · <b>${i.lbl}</b>`:""}`;
-    $("tmtip").innerHTML="";$("tmtip").appendChild(tip)};
-  box.ondblclick=e=>{const d=e.target.closest(".t");if(d)showDetail(d.dataset.t)}}
-function renderBasket(){const el=$("bk");if(!el)return;
-  if(!BASKET||!BASKET.rows||!BASKET.rows.length){$("bksec").hidden=true;return}$("bksec").hidden=false;
-  const rows=BASKET.rows,n=Object.keys(lastRank).length,inPool=rows.filter(([t])=>t in lastRank).length;
-  $("bksub").textContent=`${rows.length} names · as of ${BASKET.asOf} · ${inPool} in the current pool of ${n}`;
-  renderTreemap(rows);
-  const chg=Object.fromEntries(R.map(r=>[r[0],r[3].d1]));
-  const pc=v=>v==null?"":`<span class="${v>0?"up-c":v<0?"dn-c":"fl-c"}">${v>=0?"+":"−"}${Math.abs(v*100).toFixed(2)}%</span>`;
-  el.innerHTML=`<thead><tr><th>Ticker</th><th class=num>Weight</th><th class=num>Rank</th><th class=num>Today</th></tr></thead><tbody>`+
-    rows.map(([t,w])=>{const lr=lastRank[t],inU=t in PX;
-      return`<tr${inU?` data-t="${t}"`:""}${inU?"":' class=muted'}><td>${t}</td><td class=num>${w.toFixed(2)}%</td><td class=num>${lr?`#${lr[0]+1}`:inU?"—":"n/a"}</td><td class=num>${pc(chg[t])}</td></tr>`}).join("")+`</tbody>`;
-  el.onclick=e=>{const tr=e.target.closest("tr[data-t]");if(tr)showDetail(tr.dataset.t)}}
-// ---- Correlation clusters of the P95 names: Pearson correlation of daily
-// log returns over a window, distance = 1 - rho, average-linkage (UPGMA)
-// hierarchical clustering, rows arranged by optimal leaf ordering
-// (Bar-Joseph et al. 2001: adjacent-leaf distance sum minimised over all
-// 2^(n-1) flips of the dendrogram).
-function pearson(a,c){const n=a.length;let ma=0,mc=0;for(let i=0;i<n;i++){ma+=a[i];mc+=c[i]}ma/=n;mc/=n;
-  let sxy=0,sxx=0,syy=0;for(let i=0;i<n;i++){const x=a[i]-ma,y=c[i]-mc;sxy+=x*y;sxx+=x*x;syy+=y*y}return sxx&&syy?sxy/Math.sqrt(sxx*syy):0}
-function upgma(D){const n=D.length;let nodes=D.map((_,i)=>({leaf:i,size:1,dist:0}));let d=D.map(r=>r.slice());
-  while(nodes.length>1){let bi=0,bj=1,best=Infinity;
-    for(let i=0;i<nodes.length;i++)for(let j=i+1;j<nodes.length;j++)if(d[i][j]<best){best=d[i][j];bi=i;bj=j}
-    const A=nodes[bi],B=nodes[bj],m={l:A,r:B,size:A.size+B.size,dist:best};
-    const nd=[];for(let k=0;k<nodes.length;k++)if(k!==bi&&k!==bj)nd.push((A.size*d[k][bi]+B.size*d[k][bj])/m.size);
-    nodes=nodes.filter((_,k)=>k!==bi&&k!==bj);d=d.filter((_,k)=>k!==bi&&k!==bj).map(r=>r.filter((_,k)=>k!==bi&&k!==bj));
-    nodes.push(m);d.forEach((r,k)=>r.push(nd[k]));d.push(nd.concat([0]))}
-  return nodes[0]}
-function olo(node,D){  // -> {leaves, M: "u,w" -> {c, ord}} best orderings by (leftmost, rightmost) leaf
-  if(node.leaf!==undefined)return{leaves:[node.leaf],M:{[node.leaf+","+node.leaf]:{c:0,ord:[node.leaf]}}};
-  const A=olo(node.l,D),B=olo(node.r,D),M={};
-  for(const [X,Y] of [[A,B],[B,A]])for(const u of X.leaves)for(const w of Y.leaves){let best=null;
-    for(const m of X.leaves){const a=X.M[u+","+m];if(!a)continue;for(const k of Y.leaves){const bb=Y.M[k+","+w];if(!bb)continue;
-      const c=a.c+D[m][k]+bb.c;if(!best||c<best.c)best={c,ord:a.ord.concat(bb.ord)}}}
-    M[u+","+w]=best}
-  return{leaves:A.leaves.concat(B.leaves),M}}
-function bestOrder(root,D){const r=olo(root,D);let best=null;for(const k in r.M)if(!best||r.M[k].c<best.c)best=r.M[k];return best.ord}
-function renderCorr(names){const el=$("cm");if(!el)return;const W=CW[cw];
-  document.querySelectorAll("[data-cw]").forEach(x=>x.setAttribute("aria-pressed",x.dataset.cw===cw));
-  const use=names.filter(t=>PX[t].length>W);
-  $("cmsub").textContent=use.length>=3?`${use.length} names above P95 · Pearson ρ of daily log returns, last ${W} sessions · distance 1−ρ · average linkage · optimal leaf order`:"Need at least 3 names with enough history.";
-  if(use.length<3){el.innerHTML="";return}
-  const rets=use.map(t=>{const p=PX[t],L=p.length;return p.slice(L-W-1).map((v,i,a)=>i?Math.log(v/a[i-1]):null).slice(1)});
-  const n=use.length,C=use.map((_,i)=>use.map((_,j)=>i===j?1:pearson(rets[i],rets[j]))),D=C.map(r=>r.map(v=>1-v));
-  const root=upgma(D),ord=bestOrder(root,D);
-  const off=[];for(let i=0;i<n;i++)for(let j=0;j<n;j++)if(i!==j)off.push(Math.abs(C[i][j]));off.sort((a,c)=>a-c);const vmax=off[Math.floor(off.length*.95)]||1;
-  const col=v=>`color-mix(in oklab,var(${v>=0?"--pos":"--neg"}) ${Math.round(Math.min(1,Math.abs(v)/vmax)*100)}%,var(--chip))`;
-  // dendrogram: leaves at the right edge, merge height ∝ distance
-  const rowH=17,pos={};ord.forEach((li,k)=>pos[li]=k*rowH+rowH/2);const maxd=root.dist||1,DW=44;
-  const xOf=nd=>DW-2-(nd.dist/maxd)*(DW-6);let paths="";
-  const walk=nd=>{if(nd.leaf!==undefined)return{y:pos[nd.leaf],x:DW};const a=walk(nd.l),b=walk(nd.r),x=xOf(nd),y=(a.y+b.y)/2;
-    paths+=`M${a.x} ${a.y}H${x}V${b.y}H${b.x}`;return{y,x}};
-  const top=walk(root);paths+=`M${top.x} ${top.y}H2`;
-  el.style.setProperty("--n",n);
-  el.innerHTML=`<div></div><div></div>`+ord.map(j=>`<div class=cl>${use[j]}</div>`).join("")+
-    `<div class=dg style="grid-row:2 / span ${n}"><svg viewBox="0 0 ${DW} ${n*rowH}" preserveAspectRatio="none"><path d="${paths}"/></svg></div>`+
-    ord.map(i=>`<div class=rl data-t="${use[i]}">${use[i]}</div>`+ord.map(j=>`<div class="c${i===j?" self":""}" data-i="${i}" data-j="${j}" style="${i===j?"":"background:"+col(C[i][j])}"></div>`).join("")).join("");
-  $("cmmin").textContent="−"+vmax.toFixed(2);$("cmmax").textContent="+"+vmax.toFixed(2);
-  el.onclick=e=>{const c=e.target.closest(".c"),r=e.target.closest(".rl");if(r){showDetail(r.dataset.t);return}
-    el.querySelectorAll(".c.on").forEach(x=>x.classList.remove("on"));const old=el.querySelector(".hmtip");if(old)old.remove();
-    if(!c)return;c.classList.add("on");const i=+c.dataset.i,j=+c.dataset.j;
-    const tip=document.createElement("div");tip.className="hmtip";tip.innerHTML=`${use[i]} × ${use[j]} · ρ <b>${C[i][j].toFixed(2)}</b>`;
-    tip.style.left=(c.offsetLeft+c.offsetWidth/2)+"px";tip.style.top=c.offsetTop+"px";el.appendChild(tip)};
-  lastCorr={use,C,ord}}
-document.querySelectorAll("[data-lw]").forEach(x=>x.onclick=()=>{lw=x.dataset.lw;store.set("lw",lw);renderLab()});
-document.querySelectorAll("[data-bsize]").forEach(x=>x.onclick=()=>{bsize=x.dataset.bsize;store.set("bsize",bsize);renderBasket()});
-document.querySelectorAll("[data-bcol]").forEach(x=>x.onclick=()=>{bcol=x.dataset.bcol;store.set("bcol",bcol);renderBasket()});
-addEventListener("resize",()=>{if(BASKET)renderTreemap(BASKET.rows)});
-document.querySelectorAll("[data-lv]").forEach(x=>x.onclick=()=>{lv=x.dataset.lv==="1";store.set("lv",lv?"1":"0");renderLab()});
-document.querySelectorAll("[data-cw]").forEach(x=>x.onclick=()=>{cw=x.dataset.cw;store.set("cw",cw);renderCorr(labNames.filter(t=>PX[t]))});
-// ---- Tabs
-const setTab=t=>{b.dataset.tab=t;store.set("tab",t);document.querySelectorAll("[data-tab]").forEach(x=>x.setAttribute("aria-selected",x.dataset.tab===t));if(t==="lab")renderLab()};
-document.querySelectorAll("[data-tab]").forEach(x=>x.onclick=()=>setTab(x.dataset.tab));
-setTab(store.get("tab","rank")==="lab"?"lab":"rank");
 const setOpen=o=>{b.classList.toggle("open",o);$("gear").setAttribute("aria-expanded",o);
   if(o)document.documentElement.style.setProperty("--sheet-h",$("sheet").offsetHeight+"px")};
 const close=()=>setOpen(false);
@@ -953,7 +720,7 @@ def build_payload(prices, caps, as_of, meta=None, dates=None, intra=None):
     data.json so the page's refresh button can pull a newer build in place."""
     return {"asOf": as_of, "data": [[s, cap_bucket(caps[s]), p, (meta or {}).get(s, {}).get("index", "500")] for s, p in prices.items()],
             "meta": {s: [m["name"], m["sector"], m["industry"], m.get("group") or ""] for s, m in (meta or {}).items()},
-            "dates": dates or [], "intra": intra or {}, "basket": load_basket()}
+            "dates": dates or [], "intra": intra or {}}
 
 
 
@@ -1098,76 +865,6 @@ def print_taxonomy_report(meta):
         print(f"  {n:4d}  {k}  (fallback: sector)", file=sys.stderr)
 
 
-# ---- Residual pullback ------------------------------------------------------
-# For each name: eps_t = r_t - leave-one-out mean of its peers' r_t (peer group if
-# it has >= MIN_PEERS other eligible names in the current pool, else its sector;
-# no benchmark at all if the sector has no other eligible name). Resid21 is the
-# sum of eps over the last PULL_W sessions; sigma is the SD of eps over the
-# PULL_VOL sessions before that; pullback = -Resid21 / (sigma * sqrt(PULL_W)),
-# so +2 is an unusually large stock-specific fall. Names need PULL_W + PULL_VOL
-# daily returns; every input is kept alongside the result for audit.
-PULL_W, PULL_VOL, MIN_PEERS = 21, 126, 5
-
-
-def residual_pullback(returns, meta, include=None):
-    need = PULL_W + PULL_VOL
-    names = [s for s in returns if (include is None or s in include) and returns[s] and len(returns[s]) >= need]
-    tail = {s: returns[s][-need:] for s in names}
-    cls = {s: classify(meta[s]["sector"], meta[s]["industry"]) for s in names}
-    grp = {}
-    sec = {}
-    for s, (g, sc) in cls.items():
-        if g:
-            grp.setdefault(g, []).append(s)
-        sec.setdefault(sc, []).append(s)
-    sums = {}
-    for key, members in [*[("g:" + g, m) for g, m in grp.items()], *[("s:" + sc, m) for sc, m in sec.items()]]:
-        sums[key] = ([sum(tail[s][t] for s in members) for t in range(need)], len(members))
-    out = {}
-    for s in names:
-        g, sc = cls[s]
-        if g and len(grp[g]) - 1 >= MIN_PEERS:
-            key, label = "g:" + g, "group"
-        elif len(sec[sc]) > 1:
-            key, label = "s:" + sc, "sector"
-        else:
-            key, label = None, "none"
-        r = tail[s]
-        if key:
-            tot, n = sums[key]
-            bench = [(tot[t] - r[t]) / (n - 1) for t in range(need)]
-            peers = n - 1
-        else:
-            bench = [0.0] * need
-            peers = 0
-        eps = [r[t] - bench[t] for t in range(need)]
-        hist = eps[:PULL_VOL]
-        sigma = statistics.stdev(hist) if len(hist) > 1 else 0.0
-        resid21 = sum(eps[PULL_VOL:])
-        raw21 = sum(r[PULL_VOL:])
-        pull = -resid21 / (max(sigma, 1e-6) * math.sqrt(PULL_W))
-        out[s] = {"raw21": raw21, "bench21": raw21 - resid21, "resid21": resid21, "sigma": sigma, "pullback": pull,
-                  "benchmark": label, "peer_group": g if label == "group" else sc if label == "sector" else None, "peers": peers}
-    order = sorted(out, key=lambda s: -out[s]["pullback"])
-    for i, s in enumerate(order, 1):
-        out[s]["rank"] = i
-    return out
-
-BASKET_FILE = Path(__file__).parent / "basket.json"
-
-
-def load_basket():
-    """Optional basket.json next to this script: {"asOf": "...", "rows": [[ticker, weight%], ...]}.
-    Only tickers and weights are stored (no amounts); shown on the page's Lab tab."""
-    if not BASKET_FILE.exists():
-        return None
-    try:
-        return json.loads(BASKET_FILE.read_text())
-    except ValueError as e:
-        print(f"warning: basket.json ignored ({e})", file=sys.stderr)
-        return None
-
-
 def render_html(prices, caps, as_of, meta=None, dates=None, intra=None):
     """The page embeds each ticker's prices (not rounded returns) so the browser's
     scores match Python's exactly, plus its market-cap bucket."""
@@ -1188,26 +885,6 @@ def render_html(prices, caps, as_of, meta=None, dates=None, intra=None):
 <div class=menu id=dispmenu role=menu aria-label=Display hidden><button role=menuitemradio data-disp=raw>Raw</button><button role=menuitemradio data-disp=z>Z-score</button><button role=menuitemradio data-disp=pct>Percentile</button><button role=menuitemradio data-disp=rank>Rank</button></div></th>
 <th id=tday class=num hidden><button class=sortb id=sortday data-dir="" aria-label="Sort by today's change" title="Tap to sort, long-press for 5-day"><span id=daylbl>Today</span>{SORT}</button></th></tr></thead><tbody id=rows></tbody></table>
 </div>
-<section id=lab aria-label=Lab><div class=labh><h2 id=labttl>1M cumulative log return</h2><p id=labsub></p></div>
-<div style="display:grid;grid-template-columns:1fr auto;gap:8px;margin-bottom:10px"><div class=seg role=group aria-label="Cumulative window"><button data-lw=1M>1M</button><button data-lw=3M>3M</button><button data-lw=6M>6M</button><button data-lw=1Y>1Y</button></div>
-<div class=seg role=group aria-label="Cell value" style="min-width:9.5em"><button data-lv=0>Raw</button><button data-lv=1>Vol-adj</button></div></div>
-<div class=hm id=hm></div>
-<div class=lg><span id=lgmin></span><span class=bar></span><span id=lgmax></span></div>
-<p class=dnote>Each cell covers the window from its start to that column's close (the latest price for today): Raw is the cumulative log return; Vol-adj is Σr / (σ√N) of those same daily returns (the first daily cell has N=1 and shows 0). 1M shows every session, longer windows the end of each 5-session week. The right column is the full-window figure. Colour saturates at the 95th percentile of the grid. Tap a cell for the value, a ticker for its chart.</p>
-<div class="labh labsec"><h2>Correlation clusters</h2><p id=cmsub></p></div>
-<div class=seg role=group aria-label="Correlation window" style="margin-bottom:10px"><button data-cw=1M>1M</button><button data-cw=3M>3M</button><button data-cw=6M>6M</button><button data-cw=1Y>1Y</button></div>
-<div class=cm id=cm></div>
-<div class=lg><span id=cmmin></span><span class=bar></span><span id=cmmax></span></div>
-<p class=dnote>Rows and columns follow the dendrogram's optimal leaf order, so neighbours are the most correlated pairs; the tree on the left shows the average-linkage merges (further left = merged at a larger 1−ρ). Colour saturates at the 95th percentile of |ρ| off the diagonal. Tap a cell for ρ, a ticker for its chart.</p>
-<div id=bksec hidden><div class="labh labsec"><h2>Basket</h2><p id=bksub></p></div>
-<div class=bkrow><span class=lbl>Size</span><div class=seg role=group aria-label="Tile size"><button data-bsize=w>Weight</button><button data-bsize=r>Risk</button></div></div>
-<div class=bkrow><span class=lbl>Colour</span><div class="seg segsm" role=group aria-label="Tile colour"><button data-bcol=score>Score</button><button data-bcol=drank>&Delta;Rank</button><button data-bcol=resid>Resid</button><button data-bcol=corr>Corr</button><button data-bcol=risk>Risk%</button></div></div>
-<div class=tm id=tm></div><div id=tmtip></div><p class=dnote id=tmsub style="margin-top:6px"></p>
-<p class=dnote>Tap a tile for details, double-tap for its chart. Size: Risk sizes tiles by weight × volatility, so a volatile name takes a bigger share of the basket's risk than its weight suggests. Colour: Score is the ranking score; ΔRank is the rank change over the last 21 sessions under the same settings (is it still working?); Resid is the industry-neutral, volatility-scaled 21-session residual return, red = a stock-specific pullback against its peer group; Corr is how much a name moves with the rest of the basket (red = the same bet held again); Risk% is its share of basket variance against its weight.</p>
-<table id=bk></table>
-<p class=dnote>Weights are shares of the basket. Rank is the name's position in the current ranking (— if it is in the data but filtered out by Index/Universe, n/a if it is outside both indexes). Tap a ticker for its chart.</p></div></section>
-</main>
-<nav class=tabs aria-label=Views><button data-tab=rank aria-selected=true><span class=ico>&#9776;</span>Rank</button><button data-tab=lab aria-selected=false><span class=ico>&#9879;</span>Lab</button></nav>
 <section class=detail id=detail role=dialog aria-modal=true aria-labelledby=dtick>
 <div class=dtop><button class=x id=dclose aria-label="Close">&#x2715;</button><div style="min-width:0"><p class=dtick id=dtick></p><p class=dname id=dname></p></div></div>
 <p class=dsec id=dsec></p>
@@ -1246,7 +923,6 @@ def main():
     ap.add_argument("--z", action="store_true", help="show cross-sectional z-scores (blend z-scores each window first)")
     ap.add_argument("--html", metavar="PATH", help="also write the ranking as a static HTML page (+ data.json)")
     ap.add_argument("--no-intraday", action="store_true", help="skip the per-ticker intraday bars in --html")
-    ap.add_argument("--pullback", action="store_true", help="also print the residual pullback table (industry-neutral, vol-scaled 21D)")
     args = ap.parse_args()
     if not os.environ.get("FMP_API_KEY"):
         sys.exit("FMP_API_KEY is not set")
@@ -1260,12 +936,6 @@ def main():
     print(f"{'Rank':>4}  {'Ticker':<6}  {'score':>10}")
     for i, (s, r) in enumerate(ranked, 1):
         print(f"{i:>4}  {s:<6}  {r:>10.4f}")
-    if args.pullback:
-        pb = residual_pullback(returns, meta, include)
-        print(f"\n{'Rank':>4}  {'Ticker':<6}  {'pullback':>8}  {'raw21':>7}  {'bench21':>7}  {'resid21':>7}  {'sigma':>6}  benchmark")
-        for s in sorted(pb, key=lambda s: pb[s]["rank"]):
-            v = pb[s]
-            print(f"{v['rank']:>4}  {s:<6}  {v['pullback']:>8.2f}  {v['raw21']:>7.3f}  {v['bench21']:>7.3f}  {v['resid21']:>7.3f}  {v['sigma']:>6.4f}  {v['benchmark']}:{v['peer_group']} ({v['peers']})")
     if args.html:
         as_of = datetime.now(NY).strftime("%b %-d, %Y %-I:%M %p %Z")
         intra = {} if args.no_intraday else load_intraday_all(list(prices))
