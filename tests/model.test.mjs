@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   MODEL, decodePrices, encodePrices, logReturns, aggregate, looBenchmark, ols,
-  buildModel, momentum, windowScore, scoreStock, rankPool, winsorize, zscores, excludeReason, ols2, activeFit,
+  buildModel, momentum, windowScore, scoreStock, rankPool, winsorize, zscores, excludeReason, ols2, activeFit, rankGroups,
 } from '../model.js';
 
 const close = (a, b, eps = 1e-9) => assert.ok(Math.abs(a - b) < eps, `${a} != ${b}`);
@@ -321,4 +321,23 @@ test('two-factor benchmark: peer + market fit, residual momentum removes both, f
   const lonely = [{ t: 'Z', n: 'Z', i: '400', s: 'Solo', g: 'Me' }];
   const m2 = buildModel({ stocks: [...stocks, ...lonely] }, fixture({ T, stocks: [...stocks, ...lonely], prices: { ...prices, Z: walk(99, T) } }).history, SMALL);
   assert.equal(m2.fits.get('Z').level, 'universe'); assert.equal(m2.fits.get('Z').two.factors, 1); assert.equal(m2.fits.get('Z').two.level, 'universe');
+});
+
+test('rankGroups: equal-weight mean of member scores, ordered, with the same representations as stock rows', () => {
+  const T = 40;
+  const stocks = [...'ABC'.split('').map(t => ({ t, n: t, i: '500', s: 'Tech', g: 'Chips' })), ...'DEF'.split('').map(t => ({ t, n: t, i: '400', s: 'Tech', g: 'Soft' })), { t: 'G', n: 'G', i: '400', s: 'X', g: null }];
+  const prices = Object.fromEntries(stocks.map((s, i) => [s.t, walk(70 + i, T, (i - 3) * 0.003)]));
+  const model = buildModel({ stocks }, fixture({ T, stocks, prices }).history, SMALL);
+  const settings = { window: '12m', skip: false, residual: false, vol: false, r2: false, factors: 'one' };
+  const { rows } = rankPool(model, stocks.map(s => s.t), settings);
+  const groups = rankGroups(model, rows);
+  assert.deepEqual(groups.map(g => g.t).sort(), ['Chips', 'Soft']);          // G has no group
+  const by = Object.fromEntries(rows.map(r => [r.t, r.score]));
+  const chips = groups.find(g => g.t === 'Chips'), soft = groups.find(g => g.t === 'Soft');
+  close(chips.score, (by.A + by.B + by.C) / 3); close(soft.score, (by.D + by.E + by.F) / 3);
+  assert.equal(chips.n, 3); assert.equal(chips.sector, 'Tech');
+  assert.equal(chips.top, ['A', 'B', 'C'].reduce((a, b) => by[a] >= by[b] ? a : b));
+  assert.ok(groups[0].score >= groups[1].score && groups[0].rank === 1 && groups[1].rank === 2);
+  assert.deepEqual(groups.map(g => g.pct), [100, 0]);
+  close(groups[0].z, -groups[1].z);
 });

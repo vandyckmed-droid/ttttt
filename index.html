@@ -45,15 +45,19 @@
     </section>
 
     <div class="toolbar" id="toolbar">
-      <label class="search">
-        <svg><use href="#i-search"/></svg>
-        <input id="search" type="search" placeholder="Search" autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false" aria-label="Search ticker or company">
-      </label>
+      <div class="seg view" role="group" aria-label="View">
+        <button type="button" data-view="stocks" aria-pressed="true">Stocks</button>
+        <button type="button" data-view="groups" aria-pressed="false">Groups</button>
+      </div>
       <div class="seg scope" role="group" aria-label="Universe">
         <button type="button" data-scope="all" aria-pressed="true">900</button>
         <button type="button" data-scope="500" aria-pressed="false">500</button>
         <button type="button" data-scope="400" aria-pressed="false">400</button>
       </div>
+      <label class="search">
+        <svg><use href="#i-search"/></svg>
+        <input id="search" type="search" placeholder="Search" autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false" aria-label="Search ticker or company">
+      </label>
     </div>
     <div class="filter" id="filter" hidden>
       <span id="filter-text"></span>

@@ -2,7 +2,7 @@
 // data, renders, and runs the user-initiated refresh against FMP.
 import {
   MODEL, DEFAULT_SETTINGS, decodePrices, encodePrices, buildModel, rankPool, scoreStock,
-  excludeReason, activeFit,
+  excludeReason, activeFit, rankGroups,
 } from './model.js';
 
 const FMP = 'https://financialmodelingprep.com/stable/';
@@ -52,6 +52,7 @@ const state = {
   hz: store.get('hz', '6M'),
   overlay: store.get('overlay', 'none'),      // chart overlay: 'none' | 'bench' | 'resid'
   scope: { index: 'all', group: null },
+  view: store.get('view', 'stocks'),         // 'stocks' | 'groups'
   query: '',
   universe: null, history: null, model: null,
   asOf: null,                 // { session, ts, refreshedAt, requests }
@@ -64,6 +65,7 @@ if (!(state.settings.window in MODEL.WINDOWS) && state.settings.window !== 'blen
 if (!['raw', 'z', 'pct', 'rank'].includes(state.settings.display)) state.settings.display = 'raw';
 if (!(state.hz in HORIZONS)) state.hz = '6M';
 if (!['none', 'bench', 'resid'].includes(state.overlay)) state.overlay = 'none';
+if (!['stocks', 'groups'].includes(state.view)) state.view = 'stocks';
 if (!['one', 'two'].includes(state.settings.factors)) state.settings.factors = 'one';
 const getKey = () => store.get('fmpKey', '');
 
@@ -167,12 +169,18 @@ function pool() {
 function recompute() {
   const scopeKey = `${state.scope.index}|${state.scope.group || ''}`;
   state.prevRank = scopeKey === state.prevPoolKey ? new Map(state.ranking.rows.map(r => [r.t, r.rank])) : null;
-  state.prevRows = state.prevRank ? state.rowByTicker : null;
+  state.prevRows = state.prevRank ? rowLookup() : null;
   state.prevPoolKey = scopeKey;
   state.ranking = rankPool(state.model, pool(), state.settings);
   state.rowByTicker = new Map(state.ranking.rows.map(r => [r.t, r]));
+  state.groups = rankGroups(state.model, state.ranking.rows);
+  state.groupByName = new Map(state.groups.map(g => [g.t, g]));
   render(true);
 }
+const groupsMode = () => state.view === 'groups' && !state.scope.group;
+/** The rows the list shows and the lookup for the previous render (for ticks). */
+const listRows = () => groupsMode() ? state.groups : state.ranking.rows;
+const rowLookup = () => groupsMode() ? state.groupByName : state.rowByTicker;
 
 // ---- rendering -----------------------------------------------------------------
 function render(animate = false) {
@@ -201,7 +209,7 @@ function renderChips() {
   if ((s.residual || s.r2) && s.factors === 'two') chips.push(['2-factor', true]);
   if (s.display !== 'raw') chips.push([displayLabel(), false]);
   $('chips').innerHTML = chips.map(([c, on]) => `<span class="chip${on ? ' on' : ''}">${esc(c)}</span>`).join('');
-  $('dist-n').textContent = `${state.ranking.rows.length} ranked`;
+  $('dist-n').textContent = groupsMode() ? `${state.groups.length} groups` : `${state.ranking.rows.length} ranked`;
 }
 
 /** Histogram of the pool's raw scores; the marked value's bin is highlighted. */
@@ -228,7 +236,7 @@ function histogramSVG(values, { mark = null, width = 360, height = 56, bins = 48
 function renderHist(animate = false) {
   const box = $('hist');
   const before = animate && MOTION ? [...box.querySelectorAll('rect')].map(r => ({ y: +r.getAttribute('y'), h: +r.getAttribute('height') })) : [];
-  box.innerHTML = histogramSVG(state.ranking.rows.map(r => r.score), { width: box.clientWidth || 360 });
+  box.innerHTML = histogramSVG(listRows().map(r => r.score), { width: box.clientWidth || 360, bins: groupsMode() ? 24 : 48 });
   const rects = [...box.querySelectorAll('rect')];
   if (before.length !== rects.length) return;
   rects.forEach((r, i) => {
@@ -240,11 +248,13 @@ function renderHist(animate = false) {
 
 function renderScope() {
   document.querySelectorAll('[data-scope]').forEach(b => b.setAttribute('aria-pressed', b.dataset.scope === state.scope.index));
+  document.querySelectorAll('[data-view]').forEach(b => b.setAttribute('aria-pressed', b.dataset.view === state.view));
+  $('search').parentElement.hidden = state.view === 'groups';
 }
 function renderFilter() {
   const g = state.scope.group;
   $('filter').hidden = !g;
-  if (g) $('filter-text').innerHTML = `Peer group · <b>${esc(g)}</b>`;
+  if (g) $('filter-text').innerHTML = `Peer group · <b>${esc(g)}</b>${state.view === 'groups' ? ' <span class="dim">· back to groups</span>' : ''}`;
 }
 
 function rowHTML(row) {
@@ -260,11 +270,29 @@ function rowHTML(row) {
     `<span class="id"><span class="tk">${esc(row.t)}${mv}</span><span class="nm">${esc(s ? s.n : '')}</span></span>` +
     `<span class="val"><span class="sc ${cls}">${displayText(row)}</span><span class="sub">${esc(sub)}</span></span></li>`;
 }
+/** A peer-group row: the group's equal-weight score, its sector, size and leading name. */
+function groupHTML(g) {
+  const d = state.settings.display, cls = d === 'raw' || d === 'z' ? (g.score > 0 ? 'up' : g.score < 0 ? 'dn' : 'flat') : '';
+  const sub = d === 'pct' || d === 'rank' ? fmtScore(g.score) : `${ord(Math.floor(g.pct))} pct`;
+  let mv = '';
+  if (state.prevGroupRank && state.prevGroupRank.has(g.t)) { const dd = state.prevGroupRank.get(g.t) - g.rank; if (dd) mv = `<span class="mv ${dd > 0 ? 'up' : 'dn'}">${dd > 0 ? '▲' : '▼'}${Math.abs(dd)}</span>`; }
+  return `<li class="row group" data-t="${esc(g.t)}" data-g="1" role="button" tabindex="0"><span class="rk">${g.rank}</span>` +
+    `<span class="id"><span class="tk">${esc(g.t)}${mv}</span><span class="nm">${esc(g.sector)} · ${g.n} names · ${esc(g.top)} leads</span></span>` +
+    `<span class="val"><span class="sc ${cls}">${displayText(g)}</span><span class="sub">${esc(sub)}</span></span></li>`;
+}
 function renderList(animate = false) {
   const q = state.query.trim().toUpperCase(), list = $('list');
   // FLIP: remember where the visible rows are, re-render, then slide them from there.
   const before = new Map();
   if (animate && MOTION) for (const li of list.children) if (li.dataset.t && inView(li)) before.set(li.dataset.t, li.getBoundingClientRect().top);
+  if (groupsMode()) {
+    list.dataset.display = state.settings.display;
+    list.innerHTML = state.groups.length ? state.groups.map(groupHTML).join('') : '<li class="empty">Nothing to rank with these settings.</li>';
+    if (MOTION) animateRows(list, before, animate);
+    state.prevGroupRank = new Map(state.groups.map(g => [g.t, g.rank]));
+    $('foot').textContent = 'Each group is the equal-weight mean of its members\u2019 scores. Tap a group to see its names.';
+    return;
+  }
   let rows = state.ranking.rows, extra = '';
   if (q) {
     const match = t => t.startsWith(q) || (state.model.byTicker.get(t) || { n: '' }).n.toUpperCase().includes(q);
@@ -300,7 +328,7 @@ function animateRows(list, before, animate) {
         const dy = top - li.getBoundingClientRect().top;
         if (dy) li.animate([{ transform: `translateY(${dy}px)` }, { transform: 'none' }], { duration: 380, easing: EASE });
       } else if (before.size) li.animate([{ opacity: 0, transform: 'translateY(10px)' }, { opacity: 1, transform: 'none' }], { duration: 300, easing: EASE });
-      const prev = state.prevRows && state.prevRows.get(t), row = state.rowByTicker.get(t), sc = li.querySelector('.sc');
+      const prev = state.prevRows && state.prevRows.get(t), row = rowLookup().get(t), sc = li.querySelector('.sc');
       if (prev && row && sc && !(state.settings.display === 'rank' && prev.rank === row.rank)) {
         const key = { raw: 'score', z: 'z', pct: 'pct', rank: 'rank' }[state.settings.display];
         tween(prev[key], row[key], v => { sc.textContent = displayText({ ...row, [key]: v }); });
@@ -400,7 +428,7 @@ function renderDetail(t, keepScroll = false) {
   layoutPills($('detail'));
   document.querySelectorAll('[data-hz]').forEach(b => b.onclick = () => { state.hz = b.dataset.hz; store.set('hz', state.hz); renderDetail(t, true); });
   document.querySelectorAll('[data-overlay]').forEach(b => b.onclick = () => { state.overlay = b.dataset.overlay; store.set('overlay', state.overlay); renderDetail(t, true); });
-  $('peers-link').onclick = () => { if (!s.g) return; state.scope.group = s.g; state.query = ''; $('search').value = ''; closeDetail(); recompute(); window.scrollTo({ top: 0 }); };
+  $('peers-link').onclick = () => { if (!s.g) return; state.scope.group = s.g; state.query = ''; $('search').value = ''; state.prevPoolKey = ''; closeDetail(); recompute(); window.scrollTo({ top: 0 }); };
   if (keepScroll) $('d-body').scrollTop = scrollTop;
 }
 
@@ -846,10 +874,12 @@ function wire() {
   document.querySelectorAll('[data-flag]').forEach(i => i.onchange = () => setSettings({ [i.dataset.flag]: i.checked }));
   $('reset').onclick = () => setSettings({ ...DEFAULT_SETTINGS });
   document.querySelectorAll('[data-scope]').forEach(b => b.onclick = () => { state.scope.index = b.dataset.scope; recompute(); });
-  $('filter-clear').onclick = () => { state.scope.group = null; recompute(); };
+  $('filter-clear').onclick = () => { state.scope.group = null; state.prevPoolKey = ''; recompute(); };
   $('search').oninput = e => { state.query = e.target.value; renderList(); };
-  $('list').onclick = e => { const li = e.target.closest('li[data-t]'); if (li) openDetail(li.dataset.t); };
-  $('list').onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { const li = e.target.closest('li[data-t]'); if (li) { e.preventDefault(); openDetail(li.dataset.t); } } };
+  const pick = li => { if (li.dataset.g) { state.scope.group = li.dataset.t; state.query = ''; $('search').value = ''; recompute(); window.scrollTo({ top: 0 }); } else openDetail(li.dataset.t); };
+  $('list').onclick = e => { const li = e.target.closest('li[data-t]'); if (li) pick(li); };
+  $('list').onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { const li = e.target.closest('li[data-t]'); if (li) { e.preventDefault(); pick(li); } } };
+  document.querySelectorAll('[data-view]').forEach(b => b.onclick = () => { state.view = b.dataset.view; store.set('view', state.view); state.scope.group = null; state.prevPoolKey = ''; recompute(); });
   $('d-back').onclick = () => closeDetail();
   window.onpopstate = () => { const t = location.hash.slice(1); if (t && state.model && state.model.byTicker.has(t)) openDetail(t, false); else closeDetail(false); };
   document.onkeydown = e => { if (e.key === 'Escape') { if (openSheetId) closeSheet(); else if (state.cur) closeDetail(); } };

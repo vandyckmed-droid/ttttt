@@ -74,11 +74,11 @@ body.locked { overflow: hidden; }
 
 /* ---- toolbar ------------------------------------------------------------------ */
 .toolbar {
-  position: sticky; top: 0; z-index: 5; display: flex; gap: 8px; align-items: center;
+  position: sticky; top: 0; z-index: 5; display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
   padding: 10px 0; margin: 4px -16px 0; padding-left: 16px; padding-right: 16px;
   background: rgba(0, 0, 0, .82); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
 }
-.search { flex: 1; display: flex; align-items: center; gap: 8px; min-width: 0; height: 40px; padding: 0 12px; border-radius: 12px; background: var(--card); color: var(--fg-3); }
+.search { flex: 1 1 100%; display: flex; align-items: center; gap: 8px; min-width: 0; height: 40px; padding: 0 12px; border-radius: 12px; background: var(--card); color: var(--fg-3); }
 .search svg { width: 18px; height: 18px; flex: none; }
 .search input { flex: 1; min-width: 0; height: 100%; border: 0; background: none; color: var(--fg); outline: none; -webkit-appearance: none; appearance: none; font-size: 15px; }
 .search input::placeholder { color: var(--fg-3); }
@@ -89,7 +89,10 @@ body.locked { overflow: hidden; }
 .seg button[aria-pressed="true"] { color: var(--fg); }
 .seg .pill { position: absolute; top: 3px; bottom: 3px; left: 0; width: 0; border-radius: 9px; background: var(--card-2); box-shadow: 0 1px 2px rgba(0, 0, 0, .5); opacity: 0; pointer-events: none; }
 .seg.ready .pill { transition: transform .26s cubic-bezier(.2, .8, .2, 1), width .26s cubic-bezier(.2, .8, .2, 1), opacity .2s; }
-.seg.scope { flex: none; }
+.seg.scope, .seg.view { flex: 1 1 auto; }
+.seg.view button, .seg.scope button { padding: 0 8px; }
+.row.group .nm { font-size: 12.5px; }
+.filter .dim { color: var(--fg-3); }
 .filter { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 6px 0 0; padding: 8px 6px 8px 12px; border-radius: 12px; background: var(--card); color: var(--fg-2); font-size: 14px; }
 .filter b { color: var(--fg); font-weight: 600; }
 

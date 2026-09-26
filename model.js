@@ -363,6 +363,28 @@ export function excludeReason(model, t, settings) {
   return 'cannot be scored';
 }
 
+/**
+ * Rank peer groups by the equal-weight mean of their members' scores (the rows
+ * from rankPool). Groups keep the same shape as stock rows so the display
+ * transforms apply unchanged: { t: group, sector, n, top, score, z, pct, rank }.
+ */
+export function rankGroups(model, rows) {
+  const acc = new Map();
+  for (const row of rows) {
+    const s = model.byTicker.get(row.t);
+    if (!s || !s.g) continue;
+    let g = acc.get(s.g);
+    if (!g) { g = { t: s.g, sector: s.s, n: 0, sum: 0, top: row.t, topScore: -Infinity }; acc.set(s.g, g); }
+    g.n++; g.sum += row.score;
+    if (row.score > g.topScore) { g.topScore = row.score; g.top = row.t; }
+  }
+  const out = [...acc.values()].map(g => ({ t: g.t, sector: g.sector, n: g.n, top: g.top, score: g.sum / g.n }));
+  out.sort((a, b) => b.score - a.score);
+  const z = zscores(out.map(x => x.score), model.M.WINSOR), n = out.length;
+  out.forEach((row, i) => { row.rank = i + 1; row.z = z[i]; row.pct = n > 1 ? 100 * (n - 1 - i) / (n - 1) : 100; });
+  return out;
+}
+
 /** The value shown for a row under the display mode. */
 export function displayValue(row, display) {
   return display === 'z' ? row.z : display === 'pct' ? row.pct : display === 'rank' ? row.rank : row.score;

@@ -425,6 +425,33 @@ function mockFmp(page, { date = L, hh = 16, mm = 0, sessions = [], splits = {}, 
   await ctx.close();
 }
 
+// ---- 5d. group view -------------------------------------------------------------------------
+{
+  const { ctx, page, log } = await newPage();
+  await load(page);
+  await page.click('[data-view="groups"]'); await page.waitForTimeout(500);
+  let g = await rows(page);
+  check(g.length === 38 && g[0].rk === '1' && /^[+\u2212]\d+\.\d%$/.test(g[0].v), `groups view ranks ${g.length} groups`);
+  check(await page.locator('#search').isHidden() && /38 groups/.test(await page.textContent('#dist-n')), 'search hidden and count says groups');
+  check(await noOverflow(page), 'no horizontal overflow in groups view');
+  await page.click('#btn-settings'); await page.click('[data-display="pct"]'); await page.click('#sheet-settings [data-close]'); await page.waitForTimeout(500);
+  g = await rows(page);
+  check(g[0].v === '100%' && g[g.length - 1].v === '0%', 'group display modes apply');
+  await page.click('#btn-settings'); await page.click('#reset'); await page.click('#sheet-settings [data-close]'); await page.waitForTimeout(400);
+  const first = (await rows(page))[0].t;
+  await page.locator('.list .row').first().click(); await page.waitForTimeout(500);
+  const drill = await rows(page);
+  check(drill.length > 8 && drill.length < 60 && (await page.textContent('#filter-text')).includes(first) && drill[0].rk === '1', `tapping a group drills into its ${drill.length} names`);
+  await page.click('#filter-clear'); await page.waitForTimeout(400);
+  check((await rows(page)).length === 38, 'clearing the filter returns to the groups');
+  await page.click('[data-view="stocks"]'); await page.waitForTimeout(400);
+  check((await rows(page)).length > 850 && !(await page.locator('#search').isHidden()), 'back to stocks');
+  await page.reload({ waitUntil: 'networkidle' }); await page.waitForSelector('.list:not(.skeleton) .row');
+  check((await rows(page)).length > 850, 'view persists as stocks');
+  check(log.errors.length === 0 && log.fmp.length === 0, `console clean, no FMP: ${JSON.stringify(log.errors)}`);
+  await ctx.close();
+}
+
 // ---- 6. viewports --------------------------------------------------------------------------
 for (const [name, vp, mobile] of [['320', { width: 320, height: 640 }, true], ['430', { width: 430, height: 932 }, true], ['desktop', { width: 1280, height: 800 }, false]]) {
   const { ctx, page, log } = await newPage(vp, mobile);
