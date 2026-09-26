@@ -452,6 +452,23 @@ function mockFmp(page, { date = L, hh = 16, mm = 0, sessions = [], splits = {}, 
   await ctx.close();
 }
 
+// ---- 5e. rank history ---------------------------------------------------------------------
+{
+  const { ctx, page, log } = await newPage();
+  await load(page);
+  await page.waitForSelector('.list .row .pd', { timeout: 15000 });
+  const r = await rows(page);
+  check(r.length > 850 && r.slice(0, 20).every(x => /1w$/.test(x.sub)), `rows carry a week-ago rank delta (${r[0].sub})`);
+  await page.click('.list .row[data-t="MU"]'); await page.waitForSelector('#detail.on');
+  const d = await page.textContent('.page-body');
+  check(/Rank history/.test(d) && /1w ago #\d+/.test(d) && /1m ago #\d+/.test(d), 'detail shows the rank a week and a month ago');
+  await page.click('#d-back'); await page.waitForTimeout(300);
+  await page.click('#btn-settings'); await page.click('[data-flag="residual"]'); await page.click('#sheet-settings [data-close]'); await page.waitForTimeout(700);
+  check((await rows(page)).slice(0, 20).every(x => /1w$/.test(x.sub)), 'past deltas follow the settings');
+  check(log.fmp.length === 0 && log.errors.length === 0, `no requests, console clean: ${JSON.stringify(log.errors)}`);
+  await ctx.close();
+}
+
 // ---- 6. viewports --------------------------------------------------------------------------
 for (const [name, vp, mobile] of [['320', { width: 320, height: 640 }, true], ['430', { width: 430, height: 932 }, true], ['desktop', { width: 1280, height: 800 }, false]]) {
   const { ctx, page, log } = await newPage(vp, mobile);

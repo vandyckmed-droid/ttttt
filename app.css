@@ -108,7 +108,13 @@ body.locked { overflow: hidden; }
 .nm { color: var(--fg-2); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .val { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; }
 .sc { font-size: 16px; font-weight: 600; }
-.sub { color: var(--fg-3); font-size: 12.5px; max-width: min(44vw, 230px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sub { color: var(--fg-3); font-size: 12.5px; max-width: min(48vw, 240px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pd { margin-left: 6px; font-weight: 500; }
+.ph span { display: block; white-space: nowrap; }
+.ph i { font-style: normal; color: var(--fg-3); font-weight: 400; margin-right: 4px; }
+.ph em { font-style: normal; font-weight: 600; margin-left: 4px; }
+.pd.up { color: var(--up); opacity: .8; }
+.pd.dn { color: var(--dn); opacity: .8; }
 .mv { font-size: 12px; font-weight: 600; opacity: 0; animation: mv 4s ease forwards; }
 @keyframes mv { 0%, 65% { opacity: 1; } 100% { opacity: 0; } }
 .empty { padding: 40px 16px; text-align: center; color: var(--fg-2); }

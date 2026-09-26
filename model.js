@@ -385,6 +385,13 @@ export function rankGroups(model, rows) {
   return out;
 }
 
+/** The history as it stood `back` sessions ago (for "as of" rankings). */
+export function truncateHistory(history, back) {
+  const T = history.dates.length - back;
+  if (back <= 0 || T < 2) return history;
+  return { dates: history.dates.slice(0, T), px: Object.fromEntries(Object.entries(history.px).map(([t, p]) => [t, p.slice(0, T)])) };
+}
+
 /** The value shown for a row under the display mode. */
 export function displayValue(row, display) {
   return display === 'z' ? row.z : display === 'pct' ? row.pct : display === 'rank' ? row.rank : row.score;

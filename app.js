@@ -2,7 +2,7 @@
 // data, renders, and runs the user-initiated refresh against FMP.
 import {
   MODEL, DEFAULT_SETTINGS, decodePrices, encodePrices, buildModel, rankPool, scoreStock,
-  excludeReason, activeFit, rankGroups,
+  excludeReason, activeFit, rankGroups, truncateHistory,
 } from './model.js';
 
 const FMP = 'https://financialmodelingprep.com/stable/';
@@ -12,6 +12,7 @@ const SPLIT_JUMP = Math.log(1.2);   // a new daily move beyond ±20% triggers a 
 const RECONCILE_SESSIONS = 21;      // at least every 21 sessions, re-fetch every name's adjusted series (dividends)
 const ADJ = 'historical-price-eod/dividend-adjusted';   // dividend- and split-adjusted closes (the stored series)
 const HORIZONS = { '1M': 21, '3M': 63, '6M': 126, '1Y': 252, '3Y': 756 };
+const PAST = { '1w': 5, '1m': 21 };   // "as of" rankings: sessions back
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -158,7 +159,42 @@ async function loadData() {
 
 function rebuild() {
   state.model = buildModel(state.universe, state.history);
+  state.past = null; state.pastRanks = null;
   recompute();
+  schedulePast();
+}
+// Rankings as they stood a week and a month ago are recomputed from the stored
+// history (the model built on the history cut at T-5 and T-21), in idle time
+// after the first paint, then re-ranked instantly on every settings change.
+let pastTimer = null;
+function schedulePast() {
+  clearTimeout(pastTimer);
+  const run = () => {
+    const m = state.model;
+    const past = {};
+    for (const [k, back] of Object.entries(PAST)) past[k] = buildModel(state.universe, truncateHistory(state.history, back));
+    if (state.model !== m) return;                              // a refresh replaced the model meanwhile
+    state.past = past;
+    rankPast();
+    renderList(); if (state.cur) renderDetail(state.cur, true);
+  };
+  pastTimer = setTimeout(() => ('requestIdleCallback' in window ? requestIdleCallback(run, { timeout: 2000 }) : run()), 250);
+}
+function rankPast() {
+  if (!state.past) { state.pastRanks = null; return; }
+  const p = pool(), out = {};
+  for (const [k, m] of Object.entries(state.past)) {
+    const rows = rankPool(m, p, state.settings).rows;
+    out[k] = { stocks: new Map(rows.map(r => [r.t, r.rank])), groups: new Map(rankGroups(m, rows).map(g => [g.t, g.rank])), n: rows.length };
+  }
+  state.pastRanks = out;
+}
+/** "▲12 1w" style delta of a row's rank against the ranking k sessions ago. */
+function pastDelta(t, rank, kind, key = '1w') {
+  const pr = state.pastRanks && state.pastRanks[key] && state.pastRanks[key][kind].get(t);
+  if (pr === undefined) return '';
+  const d = pr - rank;
+  return d ? `<span class="pd ${d > 0 ? 'up' : 'dn'}">${d > 0 ? '▲' : '▼'}${Math.abs(d)} ${key}</span>` : `<span class="pd">· ${key}</span>`;
 }
 
 // ---- ranking -------------------------------------------------------------------
@@ -175,6 +211,7 @@ function recompute() {
   state.rowByTicker = new Map(state.ranking.rows.map(r => [r.t, r]));
   state.groups = rankGroups(state.model, state.ranking.rows);
   state.groupByName = new Map(state.groups.map(g => [g.t, g]));
+  rankPast();
   render(true);
 }
 const groupsMode = () => state.view === 'groups' && !state.scope.group;
@@ -268,7 +305,7 @@ function rowHTML(row) {
   }
   return `<li class="row" data-t="${esc(row.t)}" role="button" tabindex="0"><span class="rk">${row.rank}</span>` +
     `<span class="id"><span class="tk">${esc(row.t)}${mv}</span><span class="nm">${esc(s ? s.n : '')}</span></span>` +
-    `<span class="val"><span class="sc ${cls}">${displayText(row)}</span><span class="sub">${esc(sub)}</span></span></li>`;
+    `<span class="val"><span class="sc ${cls}">${displayText(row)}</span><span class="sub">${esc(sub)}${pastDelta(row.t, row.rank, 'stocks')}</span></span></li>`;
 }
 /** A peer-group row: the group's equal-weight score, its sector, size and leading name. */
 function groupHTML(g) {
@@ -278,7 +315,7 @@ function groupHTML(g) {
   if (state.prevGroupRank && state.prevGroupRank.has(g.t)) { const dd = state.prevGroupRank.get(g.t) - g.rank; if (dd) mv = `<span class="mv ${dd > 0 ? 'up' : 'dn'}">${dd > 0 ? '▲' : '▼'}${Math.abs(dd)}</span>`; }
   return `<li class="row group" data-t="${esc(g.t)}" data-g="1" role="button" tabindex="0"><span class="rk">${g.rank}</span>` +
     `<span class="id"><span class="tk">${esc(g.t)}${mv}</span><span class="nm">${esc(g.sector)} · ${g.n} names · ${esc(g.top)} leads</span></span>` +
-    `<span class="val"><span class="sc ${cls}">${displayText(g)}</span><span class="sub">${esc(sub)}</span></span></li>`;
+    `<span class="val"><span class="sc ${cls}">${displayText(g)}</span><span class="sub">${esc(sub)}${pastDelta(g.t, g.rank, 'groups')}</span></span></li>`;
 }
 function renderList(animate = false) {
   const q = state.query.trim().toUpperCase(), list = $('list');
@@ -384,6 +421,8 @@ function renderDetail(t, keepScroll = false) {
     <div class="big"><div><b class="${row.score > 0 ? 'up' : row.score < 0 ? 'dn' : ''}">${displayText(row)}</b><span class="big-label">${esc(displayLabel())}</span></div><span>#${row.rank} of ${state.ranking.rows.length}<br>${ord(Math.floor(row.pct))} percentile</span></div>
     <div class="histo mini">${histogramSVG(state.ranking.rows.map(r => r.score), { mark: row.score, width: Math.max(200, $('d-body').clientWidth - 64), height: 40, labels: false })}</div>
     ${state.settings.display !== 'raw' ? `<div class="kv"><span>${esc(rawLabel())}</span><b>${fmtScore(row.score)}</b></div>` : ''}
+    <div class="kv"><span>Rank history<span class="hint">same settings, as ranked then</span></span><b class="ph">${state.pastRanks ? Object.entries(PAST).map(([k, back]) => { const pr = state.pastRanks[k].stocks.get(t); if (pr === undefined) return `<span><i>${k} ago</i> —</span>`; const d = pr - row.rank;
+      return `<span><i>${k} ago</i> #${pr} <em class="${d > 0 ? 'up' : d < 0 ? 'dn' : ''}">${d > 0 ? '▲' : d < 0 ? '▼' : '·'}${d ? Math.abs(d) : ''}</em></span>`; }).join('') : '<span class="hint">computing…</span>'}</b></div>
     <div class="kv"><span>Z-score</span><b>${fmtNum(row.z)}</b></div>
     ${Object.entries(parts).map(([w, m]) => `<div class="kv"><span>${w.toUpperCase()} stock return<span class="hint">${m.n} sessions${state.settings.skip ? ' · skip 21' : ''}</span></span>` +
       `<b>${fmtPct(m.stock)}${state.settings.residual ? `<span class="hint">benchmark ${fmtPct(m.bench)}</span>${m.mkt === m.mkt ? `<span class="hint">market ${fmtPct(m.mkt)}</span>` : ''}<span class="hint">residual ${fmtPct(m.signal)}</span>` : ''}` +

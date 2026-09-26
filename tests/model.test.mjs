@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   MODEL, decodePrices, encodePrices, logReturns, aggregate, looBenchmark, ols,
-  buildModel, momentum, windowScore, scoreStock, rankPool, winsorize, zscores, excludeReason, ols2, activeFit, rankGroups,
+  buildModel, momentum, windowScore, scoreStock, rankPool, winsorize, zscores, excludeReason, ols2, activeFit, rankGroups, truncateHistory,
 } from '../model.js';
 
 const close = (a, b, eps = 1e-9) => assert.ok(Math.abs(a - b) < eps, `${a} != ${b}`);
@@ -340,4 +340,20 @@ test('rankGroups: equal-weight mean of member scores, ordered, with the same rep
   assert.ok(groups[0].score >= groups[1].score && groups[0].rank === 1 && groups[1].rank === 2);
   assert.deepEqual(groups.map(g => g.pct), [100, 0]);
   close(groups[0].z, -groups[1].z);
+});
+
+test('truncateHistory: the ranking as of k sessions ago is the ranking of the history cut at T-k', () => {
+  const T = 40;
+  const stocks = 'ABCDE'.split('').map(t => ({ t, n: t, i: '500', s: 'Tech', g: 'Chips' }));
+  const prices = Object.fromEntries(stocks.map((s, i) => [s.t, walk(80 + i, T, (i - 2) * 0.004)]));
+  const full = fixture({ T, stocks, prices }).history, past = truncateHistory(full, 5);
+  assert.equal(past.dates.length, T - 5); assert.equal(past.px.A.length, T - 5); assert.deepEqual(past.px.A, prices.A.slice(0, T - 5));
+  const settings = { window: '12m', skip: false, residual: false, vol: false, r2: false, factors: 'one' };
+  const now = rankPool(buildModel({ stocks }, full, SMALL), 'ABCDE'.split(''), settings).rows;
+  const then = rankPool(buildModel({ stocks }, past, SMALL), 'ABCDE'.split(''), settings).rows;
+  // the past score is the sum of the returns ending 5 sessions earlier
+  const r = logReturns(prices.A); let sum = 0; for (let k = T - 5 - 6; k <= T - 6; k++) sum += r[k];
+  close(then.find(x => x.t === 'A').score, sum * 252 / 6);
+  assert.ok(now.length === 5 && then.length === 5);
+  assert.equal(truncateHistory(full, 0), full);
 });
