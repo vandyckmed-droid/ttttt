@@ -36,7 +36,7 @@ jobs:
           FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
         run: |
           mkdir -p site && touch site/.nojekyll
-          python3 momentum.py --html site/index.html --ledger site/ledger.html > /dev/null
+          python3 momentum.py --html site/index.html > /dev/null
       - name: Publish to gh-pages
         run: |
           cd site
