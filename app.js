@@ -55,6 +55,8 @@ const state = {
   overlay: store.get('overlay', 'none'),      // chart overlay: 'none' | 'bench' | 'resid'
   scope: { index: 'all', group: null },
   view: store.get('view', 'stocks'),         // 'stocks' | 'groups'
+  watch: new Set(store.get('watch', [])),     // watched tickers (this device)
+  watchOnly: false,                            // list filter: watched names only (ranks stay those of the pool)
   query: '',
   universe: null, history: null, model: null,
   asOf: null,                 // { session, ts, refreshedAt, requests }
@@ -311,7 +313,7 @@ function rowHTML(row) {
     if (d) mv = `<span class="mv ${d > 0 ? 'up' : 'dn'}">${d > 0 ? '▲' : '▼'}${Math.abs(d)}</span>`;
   }
   return `<li class="row" data-t="${esc(row.t)}" role="button" tabindex="0"><span class="rk">${row.rank}</span>` +
-    `<span class="id"><span class="tk">${esc(row.t)}${mv}</span><span class="nm">${esc(s ? s.n : '')}</span></span>` +
+    `<span class="id"><span class="tk">${esc(row.t)}${state.watch.has(row.t) ? '<span class="star" aria-label="watched">★</span>' : ''}${mv}</span><span class="nm">${esc(s ? s.n : '')}</span></span>` +
     `<span class="val"><span class="sc ${cls}">${displayText(row)}</span><span class="sub">${esc(sub)}${pastDelta(row.t, row.rank, 'stocks')}</span></span></li>`;
 }
 /** A peer-group row: the group's equal-weight score, its sector, size and leading name. */
@@ -336,19 +338,23 @@ function renderList(animate = false) {
     $('foot').textContent = 'Each group is the equal-weight mean of its members\u2019 scores. Tap a group to see its names.';
     return;
   }
-  let rows = state.ranking.rows, extra = '';
+  let rows = state.ranking.rows, extra = '', exRows = [];
+  if (state.watchOnly) rows = rows.filter(r => state.watch.has(r.t));
   if (q) {
     const match = t => t.startsWith(q) || (state.model.byTicker.get(t) || { n: '' }).n.toUpperCase().includes(q);
     rows = rows.filter(r => match(r.t));
-    extra = state.ranking.excluded.filter(x => match(x.t)).map(x => {
+    exRows = state.ranking.excluded.filter(x => match(x.t) && (!state.watchOnly || state.watch.has(x.t)));
+    extra = exRows.map(x => {
       const s = state.model.byTicker.get(x.t);
       return `<li class="row" data-t="${esc(x.t)}" role="button" tabindex="0"><span class="rk">—</span><span class="id"><span class="tk">${esc(x.t)}</span><span class="nm">${esc(s.n)}</span></span>` +
         `<span class="val"><span class="sc flat">—</span><span class="sub">${esc(x.reason)}</span></span></li>`;
     }).join('');
   }
   list.dataset.display = state.settings.display;
+  state.navOrder = rows.concat(exRows).map(r => r.t);        // the order next / previous follow in the detail (unranked matches last)
   list.innerHTML = rows.length || extra ? rows.map(rowHTML).join('') + extra
-    : `<li class="empty">${q ? 'No matches.' : 'Nothing to rank with these settings.'}</li>`;
+    : `<li class="empty">${state.watchOnly && !state.watch.size ? 'No watched names yet. Star a stock from its page.' : q ? 'No matches.' : 'Nothing to rank with these settings.'}</li>`;
+  $('watch-filter').setAttribute('aria-pressed', state.watchOnly);
   if (MOTION) animateRows(list, before, animate);
   const ex = state.ranking.excluded.length, noHist = state.universe.stocks.length - state.model.stocks.length;
   const bits = [];
@@ -393,6 +399,7 @@ function openDetail(t, push = true) {
   if (!state.cur) state.detailFocus = document.activeElement;
   state.cur = t;
   renderDetail(t);
+  renderDetailNav();
   $('detail').classList.add('on'); $('detail').setAttribute('aria-hidden', 'false');
   $('app').inert = true;
   document.body.classList.add('locked');
@@ -400,6 +407,31 @@ function openDetail(t, push = true) {
   else if (!push && !(history.state && history.state.t)) history.replaceState({ t, root: true }, '', '#' + t);   // deep link: no entry of ours to go back to
   $('d-body').scrollTop = 0;
   $('d-back').focus({ preventScroll: true });
+}
+/** Next / previous ticker in the list's current order (search and watch filters included). */
+function navTo(dir) {
+  const order = state.navOrder || [], i = order.indexOf(state.cur), j = i + dir;
+  if (i < 0 || j < 0 || j >= order.length) return;
+  const t = order[j];
+  state.cur = t;
+  renderDetail(t); renderDetailNav();
+  history.replaceState({ ...(history.state || {}), t }, '', '#' + t);
+  $('d-body').scrollTop = 0;
+  if (MOTION) $('d-body').animate([{ opacity: 0, transform: `translateX(${dir * 24}px)` }, { opacity: 1, transform: 'none' }], { duration: 240, easing: EASE });
+}
+function renderDetailNav() {
+  const order = state.navOrder || [], i = order.indexOf(state.cur);
+  $('d-prev').disabled = i <= 0; $('d-next').disabled = i < 0 || i >= order.length - 1;
+  $('d-pos').textContent = i >= 0 ? `${i + 1} of ${order.length}` : '';
+  const on = state.watch.has(state.cur);
+  $('d-star').setAttribute('aria-pressed', on); $('d-star').setAttribute('aria-label', on ? 'Remove from watchlist' : 'Add to watchlist');
+  $('d-star').querySelector('use').setAttribute('href', on ? '#i-star-on' : '#i-star');
+}
+function toggleWatch(t) {
+  if (state.watch.has(t)) state.watch.delete(t); else state.watch.add(t);
+  store.set('watch', [...state.watch]);
+  if (state.cur === t) { renderDetailNav(); if (MOTION) $('d-star').animate([{ transform: 'scale(1)' }, { transform: 'scale(1.3)' }, { transform: 'scale(1)' }], { duration: 300, easing: EASE }); }
+  renderList();
 }
 function closeDetail(pop = true) {
   if (!state.cur) return;
@@ -996,7 +1028,17 @@ function wire() {
   document.querySelectorAll('[data-view]').forEach(b => b.onclick = () => { state.view = b.dataset.view; store.set('view', state.view); state.scope.group = null; state.prevPoolKey = ''; recompute(); });
   $('d-back').onclick = () => closeDetail();
   window.onpopstate = () => { const t = location.hash.slice(1); if (t && state.model && state.model.byTicker.has(t)) openDetail(t, false); else closeDetail(false); };
-  document.onkeydown = e => { if (e.key === 'Escape') { if (openSheetId) closeSheet(); else if (state.cur) closeDetail(); } };
+  document.onkeydown = e => {
+    if (e.key === 'Escape') { if (openSheetId) closeSheet(); else if (state.cur) closeDetail(); }
+    else if (state.cur && !openSheetId && (e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !e.target.closest('input')) navTo(e.key === 'ArrowRight' ? 1 : -1);
+  };
+  $('d-prev').onclick = () => navTo(-1); $('d-next').onclick = () => navTo(1);
+  $('d-star').onclick = () => toggleWatch(state.cur);
+  $('watch-filter').onclick = () => { state.watchOnly = !state.watchOnly; renderList(); };
+  // A horizontal swipe over the chart moves to the previous / next ticker.
+  let sx = null, sy = null;
+  $('detail').addEventListener('pointerdown', e => { if (e.pointerType === 'touch' && e.target.closest('.chart-wrap, .d-price, .d-name')) { sx = e.clientX; sy = e.clientY; } else sx = null; });
+  $('detail').addEventListener('pointerup', e => { if (sx === null) return; const dx = e.clientX - sx, dy = e.clientY - sy; sx = null; if (Math.abs(dx) > 60 && Math.abs(dx) > 2 * Math.abs(dy)) navTo(dx < 0 ? 1 : -1); });
   $('key-save').onclick = async () => {
     const k = $('key').value.trim();
     if (!k) { setNote('key-note', 'Paste a key first.', 'err'); return; }

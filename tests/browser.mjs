@@ -492,6 +492,64 @@ function mockFmp(page, { date = L, hh = 16, mm = 0, sessions = [], splits = {}, 
   await ctx.close();
 }
 
+// ---- 5g. next / previous ticker and the watchlist ----------------------------------------
+{
+  const { ctx, page, log } = await newPage();
+  await load(page);
+  const full = await rows(page);
+  const i = full.findIndex(x => x.t === 'MU'), next = full[i + 1].t, prev = full[i - 1].t;
+  await page.click('.list .row[data-t="MU"]'); await page.waitForSelector('#detail.on');
+  check((await page.textContent('#d-pos')) === `${i + 1} of ${full.length}`, `position reads "${i + 1} of ${full.length}"`);
+  const hlen = await page.evaluate(() => history.length);
+  await page.click('#d-next'); await page.waitForTimeout(300);
+  check((await page.textContent('#d-ticker')) === next && (await page.textContent('#d-pos')) === `${i + 2} of ${full.length}`, `next arrow moves to ${next}`);
+  check(await page.evaluate(([h, n]) => location.hash === '#' + n && history.length === h, [hlen, next]), 'next updates the hash without adding a history entry');
+  await page.keyboard.press('ArrowLeft'); await page.waitForTimeout(300);
+  await page.keyboard.press('ArrowLeft'); await page.waitForTimeout(300);
+  check((await page.textContent('#d-ticker')) === prev, `arrow keys move to ${prev}`);
+  check(/Rank history/.test(await page.textContent('.page-body')) && (await page.locator('.chart-wrap svg, .chart-wrap canvas').count()) > 0, 'the page re-renders fully for the new ticker');
+  await page.click('#d-back'); await page.waitForTimeout(300);
+  await page.click(`.list .row[data-t="${full[0].t}"]`); await page.waitForSelector('#detail.on');
+  check((await page.locator('#d-prev').isDisabled()) && !(await page.locator('#d-next').isDisabled()), 'previous is disabled on the first name');
+  await page.click('#d-back'); await page.waitForTimeout(300);
+  // search narrows the order next / previous follow
+  await page.fill('#search', 'A'); await page.waitForTimeout(200);
+  const narrowed = await rows(page);
+  await page.click(`.list .row[data-t="${narrowed[0].t}"]`); await page.waitForSelector('#detail.on');
+  check((await page.textContent('#d-pos')) === `1 of ${narrowed.length}`, `position follows the search (${narrowed.length} names)`);
+  await page.click('#d-next'); await page.waitForTimeout(300);
+  check((await page.textContent('#d-ticker')) === narrowed[1].t, 'next follows the searched order');
+  await page.click('#d-back'); await page.waitForTimeout(300);
+  await page.fill('#search', ''); await page.waitForTimeout(200);
+  // watchlist: star from the detail, filter the list, persist across reload
+  await page.click('.list .row[data-t="MU"]'); await page.waitForSelector('#detail.on');
+  check((await page.getAttribute('#d-star', 'aria-pressed')) === 'false', 'star starts off');
+  await page.click('#d-star'); await page.waitForTimeout(350);
+  check((await page.getAttribute('#d-star', 'aria-pressed')) === 'true' && /Remove/.test(await page.getAttribute('#d-star', 'aria-label')), 'star toggles on');
+  check(await page.evaluate(() => JSON.parse(localStorage.getItem('watch') || '[]').includes('MU')), 'watchlist saved locally');
+  await page.click('#d-back'); await page.waitForTimeout(300);
+  check((await page.locator('.list .row[data-t="MU"] .star').count()) === 1 && (await page.locator('.list .row .star').count()) === 1, 'only the starred row shows a star');
+  await page.click('#watch-filter'); await page.waitForTimeout(400);
+  let w = await rows(page);
+  check(w.length === 1 && w[0].t === 'MU' && w[0].rk === full[i].rk && (await page.getAttribute('#watch-filter', 'aria-pressed')) === 'true', `watch filter shows MU alone at its full-pool rank ${w[0] && w[0].rk}`);
+  await page.click('.list .row[data-t="MU"]'); await page.waitForSelector('#detail.on');
+  check((await page.textContent('#d-pos')) === '1 of 1' && (await page.locator('#d-prev').isDisabled()) && (await page.locator('#d-next').isDisabled()), 'watched view: no next or previous with one name');
+  await page.click('#d-back'); await page.waitForTimeout(300);
+  await page.reload({ waitUntil: 'networkidle' }); await page.waitForSelector('.list:not(.skeleton) .row');
+  check((await page.locator('.list .row[data-t="MU"] .star').count()) === 1 && (await rows(page)).length > 850, 'watchlist survives a reload; the filter starts off');
+  await page.click('.list .row[data-t="MU"]'); await page.waitForSelector('#detail.on');
+  check((await page.getAttribute('#d-star', 'aria-pressed')) === 'true', 'detail star reflects the saved watchlist');
+  await page.click('#d-star'); await page.waitForTimeout(350);
+  await page.click('#d-back'); await page.waitForTimeout(300);
+  await page.click('#watch-filter'); await page.waitForTimeout(400);
+  check((await page.locator('.list .row').count()) === 0 && /No watched names yet/.test(await page.textContent('#list')), 'empty watchlist explains itself');
+  await shot(page, 'watch-empty');
+  await page.click('#watch-filter'); await page.waitForTimeout(400);
+  check((await rows(page)).length > 850, 'filter off restores the full list');
+  check(log.fmp.length === 0 && log.errors.length === 0, `no requests, console clean: ${JSON.stringify(log.errors)}`);
+  await ctx.close();
+}
+
 // ---- 6. viewports --------------------------------------------------------------------------
 for (const [name, vp, mobile] of [['320', { width: 320, height: 640 }, true], ['430', { width: 430, height: 932 }, true], ['desktop', { width: 1280, height: 800 }, false]]) {
   const { ctx, page, log } = await newPage(vp, mobile);

@@ -17,6 +17,8 @@
     <symbol id="i-search" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4-4"/></g></symbol>
     <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
     <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-star" viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.4 5.9.8-4.3 4.1 1.1 5.9L12 16.9l-5.3 2.8 1.1-5.9-4.3-4.1 5.9-.8z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
+    <symbol id="i-star-on" viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.4 5.9.8-4.3 4.1 1.1 5.9L12 16.9l-5.3 2.8 1.1-5.9-4.3-4.1 5.9-.8z" fill="currentColor" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
     <symbol id="i-chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
   </defs>
 </svg>
@@ -57,6 +59,7 @@
       <label class="search">
         <svg><use href="#i-search"/></svg>
         <input id="search" type="search" placeholder="Search" autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false" aria-label="Search ticker or company">
+        <button class="icon small star-filter" id="watch-filter" type="button" aria-pressed="false" aria-label="Show watched names only"><svg><use href="#i-star-on"/></svg></button>
       </label>
     </div>
     <div class="filter" id="filter" hidden>
@@ -73,8 +76,12 @@
 <section class="page" id="detail" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="d-ticker">
   <header class="page-top">
     <button class="icon" id="d-back" type="button" aria-label="Back to ranking"><svg><use href="#i-back"/></svg></button>
-    <span class="page-title" id="d-ticker"></span>
-    <span class="page-spacer"></span>
+    <div class="page-nav">
+      <button class="icon small" id="d-prev" type="button" aria-label="Previous stock"><svg><use href="#i-back"/></svg></button>
+      <span class="page-title"><span id="d-ticker"></span><span class="page-pos" id="d-pos"></span></span>
+      <button class="icon small" id="d-next" type="button" aria-label="Next stock"><svg><use href="#i-chev"/></svg></button>
+    </div>
+    <button class="icon" id="d-star" type="button" aria-pressed="false" aria-label="Add to watchlist"><svg><use href="#i-star"/></svg></button>
   </header>
   <div class="page-body" id="d-body"></div>
 </section>
