@@ -63,12 +63,13 @@ function mockFmp(page, { date = L, hh = 16, mm = 0, sessions = [], splits = {}, 
     const u = new URL(route.request().url());
     if (keySeen) keySeen.push(u.searchParams.get('apikey'));
     if (mode === '401') return route.fulfill({ status: 401, body: '{"Error Message":"Invalid API KEY"}' });
+    if (mode === '401hist' && u.pathname.endsWith('/historical-price-eod/light') && u.searchParams.get('symbol') === 'A') { calls.history++; return route.fulfill({ status: 401, body: '{}' }); }
     if (mode === 'abort') return route.abort('failed');
     if (mode === '429once' && calls.hist429 === 0) { calls.hist429++; return route.fulfill({ status: 429, body: 'Limit Reach' }); }
     if (u.pathname.endsWith('/batch-quote')) {
       calls.quote++;
       const syms = u.searchParams.get('symbols').split(',');
-      return route.fulfill({ json: syms.map(s => ({ symbol: s, price: +((lastClose[s] || 50) * (splits[s] || 1.01)).toFixed(2), previousClose: lastClose[s] || 50, timestamp: nyTs(date, hh, mm) })) });
+      return route.fulfill({ json: syms.map(s => ({ symbol: s, price: +((lastClose[s] || 50) * (splits[s] || 1.01)).toFixed(2), previousClose: +((lastClose[s] || 50) * (splits[s] || 1)).toFixed(2), timestamp: nyTs(date, hh, mm) })) });
     }
     if (u.pathname.endsWith('/historical-price-eod/light')) {
       calls.history++;
@@ -176,7 +177,7 @@ function mockFmp(page, { date = L, hh = 16, mm = 0, sessions = [], splits = {}, 
   await page.click('#d-back'); await page.waitForTimeout(350);
   await page.fill('#search', 'VZ'); await page.click('.list .row[data-t="VZ"]'); await page.waitForSelector('#detail.on');
   const vz = await page.textContent('.page-body');
-  check(/Sector benchmark/.test(vz) && /only 5 peers/.test(vz), 'VZ falls back to the sector benchmark with the reason');
+  check(/Sector benchmark · fallback/.test(vz) && /Peer group Telecom not used: only 5 other names/.test(vz), 'VZ falls back to the sector benchmark with the reason');
   await shot(page, 'detail-vz');
   // no viable regression
   await page.click('#d-back'); await page.waitForTimeout(350);
@@ -251,15 +252,28 @@ function mockFmp(page, { date = L, hh = 16, mm = 0, sessions = [], splits = {}, 
   const T0 = await page.evaluate(() => document.querySelectorAll('.list .row').length);
   const calls = await mockFmp(page, { date: '2026-09-28', hh: 10, mm: 30, sessions: ['2026-09-28'], splits: { AAPL: 0.25 } });
   const toast = await afterToast(page, () => page.click('#btn-refresh'));
-  check(/Sep 28 10:30 AM/.test(toast) && toast.includes(`${QB + 2} requests`), `next-session live refresh: ${toast}`);
-  check(calls.quote === QB && calls.history === 2 && calls.historyFrom.AAPL === seed.dates[0], `1 reference call + 1 full re-download for the split (${JSON.stringify(calls.historyFrom)})`);
+  check(/Sep 28 10:30 AM/.test(toast) && toast.includes(`${QB + 3} requests`), `next-session live refresh: ${toast}`);
+  check(calls.quote === QB && calls.history === 3 && calls.historyFrom.AAPL === seed.dates[0], `2 reference calls + 1 full re-download for the split (${JSON.stringify(calls.historyFrom)})`);
   check(/Sep 28 live/.test(await page.textContent('#status-text')), 'status marks intraday prices');
+  const readStored = () => page.evaluate(() => new Promise(res => { const q = indexedDB.open('momentum', 1); q.onsuccess = () => { const r = q.result.transaction('kv').objectStore('kv').get('history'); r.onsuccess = () => res(r.result); }; }));
+  let stored = await readStored();
+  const muIntraday = decodePrices(stored.px.MU).at(-1);
+  check(stored.dates.at(-1) === '2026-09-28' && Math.abs(muIntraday - lastClose.MU * 1.01) < 0.011, `intraday quote stored for Sep 28 (${muIntraday})`);
+  await page.unroute('https://financialmodelingprep.com/**');
+  // The next session's refresh replaces that intraday snapshot with the official close (previousClose here).
+  const callsB = await mockFmp(page, { date: '2026-09-29', hh: 16, mm: 0, sessions: ['2026-09-28', '2026-09-29'], splits: { AAPL: 0.25 } });
+  const toastB = await afterToast(page, () => page.click('#btn-refresh'));
+  stored = await readStored();
+  const mu = decodePrices(stored.px.MU);
+  check(/Sep 29 close/.test(toastB) && callsB.history === 2 && stored.dates.at(-1) === '2026-09-29', `following refresh appends Sep 29 with only the reference calls: ${toastB}`);
+  check(Math.abs(mu.at(-2) - lastClose.MU) < 0.011, `Sep 28 corrected from intraday ${muIntraday} to the close ${mu.at(-2)}`);
   await page.unroute('https://financialmodelingprep.com/**');
   // a 3-session gap: per-name history for every ticker
   const calls2 = await mockFmp(page, { date: '2026-10-02', hh: 16, mm: 0, sessions: ['2026-09-28', '2026-09-29', '2026-09-30', '2026-10-01', '2026-10-02'], splits: { AAPL: 0.25 } });
   const toast2 = await afterToast(page, () => page.click('#btn-refresh'), '', 60000);
   check(/Oct 2 close/.test(toast2), `gap refresh: ${toast2}`);
-  check(calls2.quote === QB && calls2.history === universe.stocks.length + 1, `gap refresh requests: ${calls2.quote} + ${calls2.history} (1 reference + ${universe.stocks.length} names)`);
+  check(calls2.quote === QB && calls2.history === universe.stocks.length + 2, `gap refresh requests: ${calls2.quote} + ${calls2.history} (2 references + ${universe.stocks.length} names)`);
+  check((await readStored()).dates.slice(-4).join(',') === '2026-09-29,2026-09-30,2026-10-01,2026-10-02', 'gap sessions inserted in order');
   check(Math.abs((await page.evaluate(() => document.querySelectorAll('.list .row').length)) - T0) < 10, 'ranking still covers the universe');
   check(log.errors.length === 0, `console clean: ${JSON.stringify(log.errors)}`);
   await ctx.close();
@@ -283,8 +297,53 @@ function mockFmp(page, { date = L, hh = 16, mm = 0, sessions = [], splits = {}, 
   await page.unroute('https://financialmodelingprep.com/**');
   const calls = await mockFmp(page, { mode: '429once' });
   check(/Updated/.test(await afterToast(page, () => page.click('#btn-refresh'), '.ok', 30000)) && calls.hist429 === 1, 'rate limit retried once then succeeded');
+  // A fatal error during per-name history cancels the other workers and keeps its message.
+  await page.unroute('https://financialmodelingprep.com/**');
+  const c401 = await mockFmp(page, { date: '2026-10-02', hh: 16, mm: 0, sessions: ['2026-09-28', '2026-09-29', '2026-09-30', '2026-10-01', '2026-10-02'], mode: '401hist' });
+  await page.click('#btn-refresh');
+  await page.waitForSelector('#sheet-data.on', { timeout: 30000 });
+  await page.waitForTimeout(1500);
+  check(c401.history < 40 && /rejected the API key/.test(await page.textContent('#refresh-note')), `fatal error stops the workers (${c401.history} history requests) and the message stays`);
+  await page.click('#sheet-data [data-close]');
   const unexpected = log.errors.filter(e => !/Failed to load resource/.test(e));   // the mocked 401/429/abort log themselves
   check(unexpected.length === 0, `console clean apart from the provoked failures: ${JSON.stringify(unexpected)}`);
+  await ctx.close();
+}
+
+// ---- 5b. storage failure, bundle failure, deep link, focus ---------------------------------
+{
+  const { ctx, page, log } = await newPage();
+  await page.addInitScript(() => { localStorage.setItem('fmpKey', JSON.stringify('k')); indexedDB.open = () => { throw new Error('blocked'); }; });
+  await load(page);
+  await mockFmp(page, {});
+  const t = await afterToast(page, () => page.click('#btn-refresh'));
+  check(/Updated/.test(t) && /not saved/.test(t), `storage failure is reported: ${t}`);
+  await ctx.close();
+}
+{
+  const { ctx, page, log } = await newPage();
+  await page.route('**/data/history.json', r => r.fulfill({ status: 500, body: 'x' }));
+  await page.goto(BASE, { waitUntil: 'networkidle' });
+  await page.waitForSelector('.list .empty');
+  await page.click('#status'); await page.waitForSelector('#sheet-data.on');
+  check(await page.locator('#do-refresh').isDisabled() && /failed to load/.test(await page.textContent('#refresh-note')), 'bundle failure: data sheet explains and refresh is disabled');
+  check(!log.errors.some(e => /pageerror/.test(e)), `no page error on bundle failure: ${JSON.stringify(log.errors.filter(e => /pageerror/.test(e)))}`);
+  await ctx.close();
+}
+{
+  const { ctx, page, log } = await newPage();
+  await page.goto('about:blank');
+  await page.goto(BASE + '#MU', { waitUntil: 'networkidle' });
+  await page.waitForSelector('#detail.on');
+  await page.click('#d-back'); await page.waitForTimeout(300);
+  check(page.url().startsWith(BASE) && !page.url().includes('#') && !(await page.locator('#detail').evaluate(e => e.classList.contains('on'))), `deep-linked detail closes in place (${page.url()})`);
+  await page.waitForSelector('.list:not(.skeleton) .row');
+  await page.click('#btn-settings'); await page.waitForTimeout(350);
+  check(await page.evaluate(() => document.activeElement && document.activeElement.hasAttribute('data-close')), 'settings sheet takes focus');
+  check(await page.evaluate(() => document.getElementById('app').inert === true), 'main content is inert behind the sheet');
+  await page.keyboard.press('Escape'); await page.waitForTimeout(300);
+  check(await page.evaluate(() => document.activeElement && document.activeElement.id === 'btn-settings' && document.getElementById('app').inert === false), 'focus returns to the settings button on close');
+  check(log.errors.length === 0, `console clean: ${JSON.stringify(log.errors)}`);
   await ctx.close();
 }
 

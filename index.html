@@ -65,7 +65,7 @@
 </div>
 
 <!-- Ticker detail -->
-<section class="page" id="detail" aria-hidden="true" role="dialog" aria-labelledby="d-ticker">
+<section class="page" id="detail" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="d-ticker">
   <header class="page-top">
     <button class="icon" id="d-back" type="button" aria-label="Back to ranking"><svg><use href="#i-back"/></svg></button>
     <span class="page-title" id="d-ticker"></span>
@@ -90,19 +90,19 @@
     </div>
     <label class="opt row">
       <div class="opt-text"><span class="opt-name">Skip last 21 sessions</span><span class="opt-desc">Measurement stops 21 sessions before the latest price.</span></div>
-      <input type="checkbox" class="switch" data-flag="skip">
+      <input type="checkbox" role="switch" class="switch" data-flag="skip">
     </label>
     <label class="opt row">
       <div class="opt-text"><span class="opt-name">Residual momentum</span><span class="opt-desc">Subtract β × the leave-one-out peer benchmark (peer group → sector → S&amp;P 900) over the same sessions.</span></div>
-      <input type="checkbox" class="switch" data-flag="residual">
+      <input type="checkbox" role="switch" class="switch" data-flag="residual">
     </label>
     <label class="opt row">
       <div class="opt-text"><span class="opt-name">Volatility adjusted</span><span class="opt-desc">Divide by the annualized realized volatility of the same daily series.</span></div>
-      <input type="checkbox" class="switch" data-flag="vol">
+      <input type="checkbox" role="switch" class="switch" data-flag="vol">
     </label>
     <label class="opt row">
       <div class="opt-text"><span class="opt-name">× R²</span><span class="opt-desc">Multiply by the R² of the stock's 3-year regression on its benchmark.</span></div>
-      <input type="checkbox" class="switch" data-flag="r2">
+      <input type="checkbox" role="switch" class="switch" data-flag="r2">
     </label>
     <div class="opt">
       <div class="opt-text"><span class="opt-name">Display</span><span class="opt-desc">Same ranking shown as raw score, winsorized z-score, percentile (100 = top) or rank.</span></div>
@@ -127,7 +127,7 @@
     <p class="note" id="refresh-note"></p>
     <h3>FMP API key</h3>
     <div class="keyrow">
-      <input id="key" type="password" placeholder="Paste your Financial Modeling Prep key" autocomplete="off" spellcheck="false" aria-label="FMP API key">
+      <input id="key" type="password" placeholder="FMP API key" autocomplete="off" spellcheck="false" aria-label="FMP API key">
       <button class="secondary" id="key-save" type="button">Save</button>
       <button class="secondary" id="key-clear" type="button">Clear</button>
     </div>

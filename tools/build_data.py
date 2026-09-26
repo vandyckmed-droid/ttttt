@@ -116,7 +116,7 @@ def build_universe():
     out, unmapped, by_group = [], Counter(), Counter()
     for sym in sorted(stocks):
         m = stocks[sym]
-        group, sector = classify(m["sector"], m["industry"])
+        group, sector = classify(m["sector"], m["industry"], sym)
         if not sector:
             raise ValueError(f"{sym}: no sector")
         if group:

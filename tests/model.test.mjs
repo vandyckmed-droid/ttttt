@@ -10,7 +10,7 @@ const close = (a, b, eps = 1e-9) => assert.ok(Math.abs(a - b) < eps, `${a} != ${
 const isNaNv = v => assert.ok(Number.isNaN(v), `${v} is not NaN`);
 
 // Small model constants so fixtures stay hand-checkable.
-const SMALL = { ...MODEL, WINDOWS: { '6m': 3, '12m': 6 }, SKIP: 1, BETA_WINDOW: 40, MIN_PEERS: 2, MIN_OBS: 5 };
+const SMALL = { ...MODEL, WINDOWS: { '6m': 3, '12m': 6 }, SKIP: 1, BETA_WINDOW: 40, MIN_PEERS: 2, MIN_SESSION_PEERS: 2, MIN_OBS: 5 };
 
 // Deterministic pseudo-random walk prices (LCG) so fixtures are reproducible.
 function walk(seed, T, drift = 0, volp = 0.02) {
@@ -196,7 +196,12 @@ test('rankPool: order by score, rank / percentile / z are representations of the
   const settings = { window: '12m', skip: false, residual: false, vol: false, r2: false };
   const { rows, excluded } = rankPool(model, ['A', 'B', 'C', 'D', 'E'], settings);
   assert.deepEqual(excluded.map(x => x.t), ['E']);
-  assert.equal(excludeReason(model, 'E', settings), '0 of 6 sessions of history');   // a missing price voids both adjacent returns
+  assert.equal(excludeReason(model, 'E', settings), '2 sessions missing in the last 6');   // a missing price voids both adjacent returns
+  assert.equal(excludeReason(model, 'E', { ...settings, skip: true }), '1 session missing in the last 6');  // the latest return is skipped
+  const pricesF = { ...prices, F: walk(5, T).map((p, k) => k === T - 1 ? null : p) };   // no quote for the latest session
+  const mF = buildModel({ stocks: [...stocks, { t: 'F', n: 'F', i: '500', s: 'Tech', g: 'Chips' }] }, fixture({ T, stocks, prices: pricesF }).history, SMALL);
+  assert.equal(excludeReason(mF, 'F', settings), 'latest session missing (no quote yet)');
+  assert.notEqual(scoreStock(mF, 'F', { ...settings, skip: true }).score, null);       // with Skip the missing latest session does not matter
   assert.equal(rows.length, 4);
   for (let i = 1; i < rows.length; i++) assert.ok(rows[i - 1].score >= rows[i].score);
   assert.deepEqual(rows.map(r => r.rank), [1, 2, 3, 4]);
@@ -235,7 +240,7 @@ test('efficient LOO equals brute force on a larger random fixture (universe leve
   const stocks = Array.from({ length: N }, (_, i) => ({ t: `S${i}`, n: `S${i}`, i: '500', s: 'X', g: 'G' }));
   const prices = Object.fromEntries(stocks.map((s, i) => [s.t, walk(100 + i, T)]));
   for (let i = 0; i < N; i += 7) prices[`S${i}`][30 + i % 5] = null;   // scatter some gaps
-  const model = buildModel({ stocks }, fixture({ T, stocks, prices }).history, { ...SMALL, MIN_PEERS: 3 });
+  const model = buildModel({ stocks }, fixture({ T, stocks, prices }).history, { ...SMALL, MIN_PEERS: 3, MIN_SESSION_PEERS: 3 });
   for (const s of stocks.slice(0, 6)) {
     const mine = model.ret.get(s.t), b = looBenchmark(model.agg.get('universe'), mine, 3);
     for (let k = 1; k < T; k++) {
@@ -243,4 +248,24 @@ test('efficient LOO equals brute force on a larger random fixture (universe leve
       if (others.length >= 3) close(b[k], others.reduce((a, v) => a + v, 0) / others.length); else isNaNv(b[k]);
     }
   }
+});
+
+test('session gate: one missing print in a 9-name group keeps the benchmark (MIN_SESSION_PEERS < MIN_PEERS)', () => {
+  const T = 30, names = 'ABCDEFGHI'.split('');
+  const stocks = names.map(t => ({ t, n: t, i: '500', s: 'Tech', g: 'Nine' }));
+  const prices = Object.fromEntries(stocks.map((s, i) => [s.t, walk(40 + i, T)]));
+  prices.I[T - 3] = null;                                    // I misses one recent print
+  const M = { ...MODEL, WINDOWS: { '6m': 3, '12m': 6 }, SKIP: 1, BETA_WINDOW: 20, MIN_OBS: 5, MIN_PEERS: 8, MIN_SESSION_PEERS: 4 };
+  const model = buildModel({ stocks }, fixture({ T, stocks, prices }).history, M);
+  const fA = model.fits.get('A');
+  assert.equal(fA.level, 'peer'); assert.equal(fA.peers, 8);
+  assert.ok(fA.bench[T - 3] === fA.bench[T - 3], 'benchmark still defined with 7 others trading');
+  const { rows, excluded } = rankPool(model, names, { window: '12m', skip: false, residual: true, vol: false, r2: false });
+  assert.equal(rows.length, 8);                              // only I itself (missing return) is excluded
+  assert.deepEqual(excluded.map(x => x.t), ['I']);
+  // With the strict gate the whole group would have lost the benchmark on that session.
+  const strict = buildModel({ stocks }, fixture({ T, stocks, prices }).history, { ...M, MIN_SESSION_PEERS: 8 });
+  assert.ok(Number.isNaN(strict.fits.get('A').bench[T - 3]));
+  assert.equal(rankPool(strict, names, { window: '12m', skip: false, residual: true, vol: false, r2: false }).rows.length, 0);
+  assert.match(excludeReason(strict, 'A', { window: '12m', skip: false, residual: true, vol: false, r2: false }), /benchmark unavailable on 2 sessions/);
 });

@@ -15,7 +15,8 @@ export const MODEL = Object.freeze({
   WINDOWS: Object.freeze({ '6m': 126, '12m': 252 }),
   SKIP: 21,                  // sessions dropped from the recent end when Skip is on
   BETA_WINDOW: 756,          // ~3 years of daily returns for the regression
-  MIN_PEERS: 8,              // a leave-one-out benchmark needs >= this many other names on a session
+  MIN_PEERS: 8,              // a benchmark level is viable only with >= this many other names in it
+  MIN_SESSION_PEERS: 4,      // ... and its leave-one-out return on a session needs >= this many others trading
   MIN_OBS: 252,              // a regression needs >= this many overlapping observations
   WINSOR: 0.01,              // z-score display clips at the 1st / 99th percentile
 });
@@ -88,9 +89,10 @@ export function aggregate(seriesList, T) {
 /**
  * Equal-weight leave-one-out benchmark for one stock: on each session the mean
  * return of every other valid member, derived from the aggregates as
- * (sum - r_self) / (count - 1). NaN when fewer than minPeers others are valid.
+ * (sum - r_self) / (count - 1). NaN when fewer than minPeers others are valid
+ * that session (MODEL.MIN_SESSION_PEERS; the level itself is gated by MIN_PEERS).
  */
-export function looBenchmark(agg, self, minPeers = MODEL.MIN_PEERS) {
+export function looBenchmark(agg, self, minPeers = MODEL.MIN_SESSION_PEERS) {
   const T = agg.sum.length, b = new Float64Array(T);
   b[0] = NaN;
   for (let k = 1; k < T; k++) {
@@ -154,7 +156,7 @@ export function buildModel(universe, history, M = MODEL) {
       const key = level === 'peer' ? (s.g && `peer:${s.g}`) : level === 'sector' ? `sector:${s.s}` : 'universe';
       if (!key || !agg.has(key)) { tried.push({ level, name: name || '—', peers: 0, n: 0, ok: false, reason: 'no group' }); continue; }
       const a = agg.get(key), peers = a.size - 1;
-      const bench = looBenchmark(a, r, M.MIN_PEERS);
+      const bench = looBenchmark(a, r, M.MIN_SESSION_PEERS);
       const reg = ols(bench, r, from, to);
       const ok = peers >= M.MIN_PEERS && reg.n >= M.MIN_OBS && reg.beta === reg.beta;
       const reason = ok ? 'ok' : peers < M.MIN_PEERS ? `only ${peers} peers (min ${M.MIN_PEERS})`
@@ -280,15 +282,25 @@ export function rankPool(model, pool, settings) {
   return { rows, excluded };
 }
 
+/** Why scoreStock returned null for this ticker, in the user's terms. */
 export function excludeReason(model, t, settings) {
-  const fit = model.fits.get(t), r = model.ret.get(t);
+  const fit = model.fits.get(t), r = model.ret.get(t), M = model.M, T = model.T;
   if (!r) return 'no price history';
-  const need = Math.max(...windowsFor(settings).map(w => model.M.WINDOWS[w]));
-  let valid = 0;
-  for (let k = model.T - 1; k >= 1 && r[k] === r[k]; k--) valid++;
-  if (valid < need) return `${valid} of ${need} sessions of history`;
+  const need = Math.max(...windowsFor(settings).map(w => M.WINDOWS[w])), skip = settings.skip ? M.SKIP : 0;
+  let first = 1;
+  while (first < T && r[first] !== r[first]) first++;          // first session with a return
+  if (T - first < need) return `${T - first} of ${need} sessions of history`;
+  let missing = 0, latest = false;
+  for (let k = T - need; k <= T - 1 - skip; k++) if (r[k] !== r[k]) { missing++; if (k === T - 1) latest = true; }
+  if (missing === 1 && latest) return 'latest session missing (no quote yet)';
+  if (missing) return `${missing} session${missing > 1 ? 's' : ''} missing in the last ${need}`;
   if ((settings.residual || settings.r2) && !fit.level) return 'no viable regression benchmark';
-  return 'missing sessions in window';
+  if (settings.residual) {
+    let gaps = 0;
+    for (let k = T - need; k <= T - 1 - skip; k++) if (fit.bench[k] !== fit.bench[k]) gaps++;
+    if (gaps) return `benchmark unavailable on ${gaps} session${gaps > 1 ? 's' : ''} (fewer than ${M.MIN_SESSION_PEERS} peers traded)`;
+  }
+  return 'cannot be scored';
 }
 
 /** The value shown for a row under the display mode. */

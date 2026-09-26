@@ -6,7 +6,7 @@ import {
 } from './model.js';
 
 const FMP = 'https://financialmodelingprep.com/stable/';
-const REF_SYMBOL = 'AAPL';          // one history call tells us which sessions a refresh must fill
+const REF_SYMBOLS = ['AAPL', 'MSFT'];   // their daily history tells us which sessions a refresh must fill
 const MAX_SESSIONS = 800;           // keep a little more than the 3-year regression window
 const SPLIT_JUMP = Math.log(1.4);   // a new daily move beyond ±40% triggers a full re-download of that name
 const HORIZONS = { '1M': 21, '3M': 63, '6M': 126, '1Y': 252, '3Y': 756 };
@@ -29,19 +29,19 @@ const idb = {
       q.onerror = () => rej(q.error);
     });
   },
+  /** Resolves with the request result; rejects when storage is unavailable or the write fails. */
   async run(mode, fn) {
-    try {
-      const db = await this.open();
-      return await new Promise((res, rej) => {
-        const tx = db.transaction('kv', mode), req = fn(tx.objectStore('kv'));
-        tx.oncomplete = () => res(req && req.result);
-        tx.onerror = () => rej(tx.error);
-      });
-    } catch { return undefined; }
+    const db = await this.open();
+    return new Promise((res, rej) => {
+      const tx = db.transaction('kv', mode), req = fn(tx.objectStore('kv'));
+      tx.oncomplete = () => res(req && req.result);
+      tx.onerror = () => rej(tx.error || new Error('storage error'));
+      tx.onabort = () => rej(tx.error || new Error('storage aborted'));
+    });
   },
-  get(k) { return this.run('readonly', s => s.get(k)); },
+  get(k) { return this.run('readonly', s => s.get(k)).catch(() => undefined); },
   set(k, v) { return this.run('readwrite', s => s.put(v, k)); },
-  del(k) { return this.run('readwrite', s => s.delete(k)); },
+  del(k) { return this.run('readwrite', s => s.delete(k)).catch(() => undefined); },
 };
 
 // ---- state -------------------------------------------------------------------
@@ -90,9 +90,13 @@ const displayText = row => {
   const d = state.settings.display;
   return d === 'z' ? fmtNum(row.z) : d === 'pct' ? `${Math.floor(row.pct)}%` : d === 'rank' ? `#${row.rank}` : fmtScore(row.score);
 };
-const displayLabel = () => ({ raw: state.settings.vol ? 'Vol-adjusted score' : 'Annualized log return', z: 'Z-score', pct: 'Percentile', rank: 'Rank' })[state.settings.display];
+const rawLabel = () => `${state.settings.vol ? 'Vol-adjusted' : 'Annualized'} ${state.settings.residual ? 'residual' : 'log'} return${state.settings.r2 ? ' × R²' : ''}`;
+const displayLabel = () => ({ raw: rawLabel(), z: 'Z-score', pct: 'Percentile', rank: 'Rank' })[state.settings.display];
 const windowLabel = () => ({ '6m': '6M', '12m': '12M', blend: '6M+12M' })[state.settings.window];
-const isIntraday = () => state.asOf && state.asOf.ts && nyDate(state.asOf.ts) === state.asOf.session && nyHour(state.asOf.ts) < 16;
+const intradayAt = a => !!(a && a.ts && nyDate(a.ts) === a.session && nyHour(a.ts) < 16);
+const isIntraday = () => intradayAt(state.asOf);
+const ord = n => { const v = n % 100; return n + (v >= 11 && v <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][Math.min(n % 10, 4) % 4] || 'th'); };
+const weekdaysBetween = (a, b) => { let n = 0; const d = new Date(a + 'T12:00:00Z'); const end = new Date(b + 'T12:00:00Z'); for (d.setUTCDate(d.getUTCDate() + 1); d < end; d.setUTCDate(d.getUTCDate() + 1)) { const w = d.getUTCDay(); if (w > 0 && w < 6) n++; } return n; };
 
 // ---- data ----------------------------------------------------------------------
 async function fetchJSON(url) {
@@ -107,9 +111,10 @@ async function loadData() {
   const [universe, seed] = await Promise.all([fetchJSON('data/universe.json'), fetchJSON('data/history.json')]);
   const [stored, meta] = await Promise.all([idb.get('history'), idb.get('meta')]);
   state.universe = universe;
-  if (stored && stored.dates && stored.dates[stored.dates.length - 1] >= seed.dates[seed.dates.length - 1]) {
+  const storedLast = stored && stored.dates ? stored.dates[stored.dates.length - 1] : '', seedLast = seed.dates[seed.dates.length - 1];
+  if (storedLast > seedLast || (storedLast === seedLast && !intradayAt(meta))) {
     state.history = decodeBundle(stored);
-    state.asOf = meta || { session: stored.dates[stored.dates.length - 1] };
+    state.asOf = meta || { session: storedLast };
   } else {
     if (stored) { idb.del('history'); idb.del('meta'); }
     state.history = decodeBundle(seed);
@@ -168,17 +173,18 @@ function histogramSVG(values, { mark = null, width = 360, height = 56, bins = 48
   const s = values.slice().sort((a, b) => a - b);
   let lo = s[Math.round(0.01 * (n - 1))], hi = s[Math.round(0.99 * (n - 1))];
   if (!(hi > lo)) { lo -= 1e-6; hi += 1e-6; }
+  // Bars cover the 1st..99th percentile; the few names outside are not drawn (the labels say so).
   const counts = new Array(bins).fill(0), bin = v => Math.min(bins - 1, Math.max(0, Math.floor((v - lo) / (hi - lo) * bins)));
-  for (const v of values) counts[bin(v)]++;
-  const max = Math.max(...counts), bw = width / bins, top = labels ? height - 14 : height, gap = 1.2;
+  for (const v of values) if (v >= lo && v <= hi) counts[bin(v)]++;
+  const max = Math.max(...counts) || 1, bw = width / bins, top = labels ? height - 14 : height, gap = 1.2;
   let out = `<svg viewBox="0 0 ${width} ${height}" aria-hidden="true">`;
+  if (lo < 0 && hi > 0) { const zx = (0 - lo) / (hi - lo) * width; out += `<line class="zero" x1="${zx.toFixed(1)}" x2="${zx.toFixed(1)}" y1="0" y2="${top}"/>`; }
   const markBin = mark === null ? -1 : bin(mark);
   counts.forEach((c, i) => {
-    const h = Math.max(c ? 2 : 0, c / max * top), x = i * bw, center = lo + (i + .5) * (hi - lo) / bins;
+    const h = Math.max(c ? 2 : i === markBin ? 3 : 0, c / max * top), x = i * bw, center = lo + (i + .5) * (hi - lo) / bins;
     out += `<rect class="${i === markBin ? 'mark' : center >= 0 ? 'pos' : 'neg'}" x="${(x + gap / 2).toFixed(1)}" y="${(top - h).toFixed(1)}" width="${(bw - gap).toFixed(1)}" height="${h.toFixed(1)}" rx="1"/>`;
   });
-  if (lo < 0 && hi > 0) { const zx = (0 - lo) / (hi - lo) * width; out += `<line class="zero" x1="${zx.toFixed(1)}" x2="${zx.toFixed(1)}" y1="0" y2="${top}"/>`; }
-  if (labels) out += `<text x="0" y="${height - 2}">${esc(fmtScore(lo))}</text><text x="${width}" y="${height - 2}" text-anchor="end">${esc(fmtScore(hi))}</text>`;
+  if (labels) out += `<text x="0" y="${height - 2}">\u2264 ${esc(fmtScore(lo))}</text><text x="${width}" y="${height - 2}" text-anchor="end">\u2265 ${esc(fmtScore(hi))}</text>`;
   return out + '</svg>';
 }
 function renderHist() { $('hist').innerHTML = histogramSVG(state.ranking.rows.map(r => r.score), { width: $('hist').clientWidth || 360 }); }
@@ -193,9 +199,9 @@ function renderFilter() {
 }
 
 function rowHTML(row) {
-  const s = state.universe.stocks && state.model.byTicker.get(row.t), raw = row.score;
-  const cls = raw > 0 ? 'up' : raw < 0 ? 'dn' : 'flat';
-  const sub = state.settings.display === 'pct' ? fmtScore(raw) : state.settings.display === 'rank' ? fmtScore(raw) : `${Math.floor(row.pct)}th pct`;
+  const s = state.model.byTicker.get(row.t), raw = row.score, d = state.settings.display;
+  const cls = d === 'raw' || d === 'z' ? (raw > 0 ? 'up' : raw < 0 ? 'dn' : 'flat') : '';
+  const sub = d === 'pct' || d === 'rank' ? fmtScore(raw) : `${ord(Math.floor(row.pct))} pct`;
   let mv = '';
   if (state.prevRank && state.prevRank.has(row.t)) {
     const d = state.prevRank.get(row.t) - row.rank;
@@ -217,6 +223,7 @@ function renderList() {
         `<span class="val"><span class="sc flat">—</span><span class="sub">${esc(x.reason)}</span></span></li>`;
     }).join('');
   }
+  $('list').dataset.display = state.settings.display;
   $('list').innerHTML = rows.length || extra ? rows.map(rowHTML).join('') + extra
     : `<li class="empty">${q ? 'No matches.' : 'Nothing to rank with these settings.'}</li>`;
   const ex = state.ranking.excluded.length, noHist = state.universe.stocks.length - state.model.stocks.length;
@@ -229,19 +236,27 @@ function renderList() {
 // ---- detail page -----------------------------------------------------------------
 function openDetail(t, push = true) {
   if (!state.model.byTicker.has(t)) return;
+  if (!state.cur) state.detailFocus = document.activeElement;
   state.cur = t;
   renderDetail(t);
   $('detail').classList.add('on'); $('detail').setAttribute('aria-hidden', 'false');
+  $('app').inert = true;
   document.body.classList.add('locked');
   if (push && location.hash !== '#' + t) history.pushState({ t }, '', '#' + t);
+  else if (!push && !(history.state && history.state.t)) history.replaceState({ t, root: true }, '', '#' + t);   // deep link: no entry of ours to go back to
   $('d-body').scrollTop = 0;
+  $('d-back').focus({ preventScroll: true });
 }
 function closeDetail(pop = true) {
   if (!state.cur) return;
   state.cur = null;
   $('detail').classList.remove('on'); $('detail').setAttribute('aria-hidden', 'true');
+  $('app').inert = false;
   document.body.classList.remove('locked');
-  if (pop && location.hash) history.back();
+  if (pop && history.state && history.state.t && !history.state.root) history.back();
+  else if (location.hash) history.replaceState(null, '', location.pathname + location.search);
+  if (state.detailFocus && state.detailFocus.focus) state.detailFocus.focus({ preventScroll: true });
+  state.detailFocus = null;
 }
 
 function renderDetail(t, keepScroll = false) {
@@ -258,13 +273,12 @@ function renderDetail(t, keepScroll = false) {
     : `<p class="d-price">—</p><p class="d-chg flat">No price for the latest session</p>`;
 
   const momCard = row ? `
-    <div class="big"><b class="${row.score > 0 ? 'up' : row.score < 0 ? 'dn' : ''}">${displayText(row)}</b><span>#${row.rank} of ${state.ranking.rows.length}<br>${Math.floor(row.pct)}th percentile</span></div>
+    <div class="big"><div><b class="${row.score > 0 ? 'up' : row.score < 0 ? 'dn' : ''}">${displayText(row)}</b><span class="big-label">${esc(displayLabel())}</span></div><span>#${row.rank} of ${state.ranking.rows.length}<br>${ord(Math.floor(row.pct))} percentile</span></div>
     <div class="histo mini">${histogramSVG(state.ranking.rows.map(r => r.score), { mark: row.score, width: Math.max(200, $('d-body').clientWidth - 64), height: 40, labels: false })}</div>
-    <div class="kv"><span>${esc(displayLabel())}</span><b>${displayText(row)}</b></div>
-    ${state.settings.display !== 'raw' ? `<div class="kv"><span>${esc(state.settings.vol ? 'Vol-adjusted score' : 'Annualized log return')}</span><b>${fmtScore(row.score)}</b></div>` : ''}
+    ${state.settings.display !== 'raw' ? `<div class="kv"><span>${esc(rawLabel())}</span><b>${fmtScore(row.score)}</b></div>` : ''}
     <div class="kv"><span>Z-score</span><b>${fmtNum(row.z)}</b></div>
-    ${Object.entries(parts).map(([w, m]) => `<div class="kv"><span>${w.toUpperCase()} stock return<span class="hint">${m.n} sessions${state.settings.skip ? ', last 21 skipped' : ''}</span></span>` +
-      `<b>${fmtPct(m.stock)}${state.settings.residual ? `<span class="hint">benchmark ${fmtPct(m.bench)} · residual ${fmtPct(m.signal)}</span>` : ''}` +
+    ${Object.entries(parts).map(([w, m]) => `<div class="kv"><span>${w.toUpperCase()} stock return<span class="hint">${m.n} sessions${state.settings.skip ? ' · skip 21' : ''}</span></span>` +
+      `<b>${fmtPct(m.stock)}${state.settings.residual ? `<span class="hint">benchmark ${fmtPct(m.bench)}</span><span class="hint">residual ${fmtPct(m.signal)}</span>` : ''}` +
       `<span class="hint">vol ${(m.sd * Math.sqrt(MODEL.YEAR) * 100).toFixed(1)}% ann.</span></b></div>`).join('')}
     <div class="chipline">${[[windowLabel(), 1], ['Skip 21', state.settings.skip], ['Residual', state.settings.residual], ['Vol-adj', state.settings.vol], ['× R²', state.settings.r2]]
       .filter(([, on]) => on).map(([c]) => `<span class="chip on">${esc(c)}</span>`).join('')}</div>`
@@ -272,7 +286,7 @@ function renderDetail(t, keepScroll = false) {
 
   const lvl = { peer: 'Peer group', sector: 'Sector', universe: 'S&P 900' };
   const regCard = `
-    ${fit.level ? `<div class="bench"><span class="bench-lv">${lvl[fit.level]} benchmark</span><b>${esc(fit.name)}</b><span class="hint">Equal-weight, leave-one-out · ${fit.peers} peers${fit.level !== 'peer' ? ` · ${esc(fit.tried[0].reason)}` : ''}</span></div>
+    ${fit.level ? `<div class="bench"><span class="bench-lv">${lvl[fit.level]} benchmark${fit.level !== 'peer' ? ' · fallback' : ''}</span><b>${esc(fit.name)}</b><span class="hint">Equal-weight, leave-one-out · ${fit.peers} other names</span>${fit.level !== 'peer' ? `<span class="hint">Peer group ${esc(fit.tried[0].name)} not used: ${esc(fit.tried[0].reason.replace('peers', 'other names'))}</span>` : ''}</div>
     <div class="kv"><span>Beta</span><b>${fit.beta.toFixed(2)}</b></div>
     <div class="kv"><span>Alpha (annualized)</span><b>${fmtPct(fit.alpha * MODEL.YEAR)}</b></div>
     <div class="kv"><span>R²</span><b>${fit.r2.toFixed(2)}</b></div>
@@ -336,7 +350,7 @@ function drawChart(t) {
   box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" id="csvg">
 <path class="ar" d="${area}" fill="${col}"/>
 <line class="ref" x1="0" x2="${W}" y1="${ry.toFixed(1)}" y2="${ry.toFixed(1)}"/>
-<text x="${padL}" y="14">${money(maxV)}</text><text x="${padL}" y="${H - 6}">${money(minV)}</text>
+<text x="${W - padR}" y="${(Y(maxV) - 6).toFixed(1)}" text-anchor="end">$${money(maxV)}</text><text x="${W - padR}" y="${(Y(minV) + 14).toFixed(1)}" text-anchor="end">$${money(minV)}</text>
 ${bench ? `<path class="bl" d="${path(bench)}"/>` : ''}
 <path class="ln" d="${d}" stroke="${col}"/>
 <g id="hover" style="display:none"><line class="hair" y1="${padT}" y2="${H - padB}"/><circle class="dot" r="4.5" fill="${col}"/></g></svg><div class="tip" id="tip" hidden></div>`;
@@ -353,10 +367,13 @@ ${bench ? `<path class="bl" d="${path(bench)}"/>` : ''}
     const c = hov.querySelector('circle'); c.setAttribute('cx', x); c.setAttribute('cy', y);
     tip.hidden = false;
     tip.innerHTML = `${esc(fmtDate(xs[i], { month: 'short', day: 'numeric', year: 'numeric' }))} <b>$${money(ys[i])}</b>${bench && bench[i] > 0 ? ` · bench $${money(bench[i])}` : ''}`;
-    tip.style.left = Math.max(70, Math.min(W - 70, x)) / W * 100 + '%';
+    const half = tip.offsetWidth / 2 + 4;
+    tip.style.left = Math.max(half, Math.min(W - half, x)) + 'px';
   };
+  const hide = () => { hov.style.display = 'none'; tip.hidden = true; };
   svg.onpointermove = move; svg.onpointerdown = move;
-  svg.onpointerleave = () => { hov.style.display = 'none'; tip.hidden = true; };
+  svg.onpointerleave = e => { if (e.pointerType !== 'touch') hide(); };   // a touch readout stays until the next tap elsewhere
+  $('d-body').onpointerdown = e => { if (!box.contains(e.target)) hide(); };
 }
 
 // ---- sheets -----------------------------------------------------------------------
@@ -364,16 +381,33 @@ let openSheetId = null;
 function openSheet(id) {
   closeSheet();
   openSheetId = id;
-  $('backdrop').hidden = false; $(id).hidden = false;
+  state.sheetFocus = document.activeElement;
+  $('backdrop').hidden = false; $(id).hidden = false; $(id).style.transform = '';
   requestAnimationFrame(() => $(id).classList.add('on'));
   document.body.classList.add('locked');
+  $('app').inert = true; $('detail').inert = true;
   if (id === 'sheet-settings') renderSettings(); else renderDataSheet();
+  $(id).querySelector('[data-close]').focus({ preventScroll: true });
 }
 function closeSheet() {
   if (!openSheetId) return;
   const el = $(openSheetId); openSheetId = null;
-  el.classList.remove('on'); el.hidden = true; $('backdrop').hidden = true;
+  el.classList.remove('on'); el.hidden = true; el.style.transform = ''; $('backdrop').hidden = true;
+  $('detail').inert = false; $('app').inert = !!state.cur;
   if (!state.cur) document.body.classList.remove('locked');
+  if (state.sheetFocus && state.sheetFocus.focus) state.sheetFocus.focus({ preventScroll: true });
+  state.sheetFocus = null;
+}
+/** Drag the handle or header down to dismiss (phones; the desktop dialog is centred). */
+function dragToDismiss(sheet) {
+  let y0 = null, dy = 0;
+  sheet.addEventListener('pointerdown', e => {
+    if (window.innerWidth >= 720 || e.target.closest('button') || !e.target.closest('.grab, .sheet-top')) return;
+    y0 = e.clientY; dy = 0; sheet.style.transition = 'none'; sheet.setPointerCapture(e.pointerId);
+  });
+  sheet.addEventListener('pointermove', e => { if (y0 === null) return; dy = Math.max(0, e.clientY - y0); sheet.style.transform = `translateY(${dy}px)`; });
+  const end = () => { if (y0 === null) return; y0 = null; sheet.style.transition = ''; if (dy > 80) closeSheet(); else sheet.style.transform = ''; };
+  sheet.addEventListener('pointerup', end); sheet.addEventListener('pointercancel', end);
 }
 function renderSettings() {
   const s = state.settings;
@@ -389,20 +423,27 @@ function setSettings(patch) {
 }
 
 function renderDataSheet() {
-  const a = state.asOf, key = getKey(), T = state.model.T;
+  const key = getKey();
+  if (!state.model) {
+    $('data-facts').innerHTML = ''; $('do-refresh').disabled = true; $('do-refresh').textContent = 'Refresh prices';
+    setNote('refresh-note', 'The data bundle failed to load. Reload the page to try again.', 'err');
+    $('key').placeholder = 'FMP API key'; setNote('key-note', key ? 'Key saved in this browser.' : '');
+    return;
+  }
+  const a = state.asOf, T = state.model.T;
   $('data-facts').innerHTML = [
     ['Prices through', `${fmtDate(a.session, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })} ${isIntraday() ? 'live ' + nyTime(a.ts) : 'close'}`],
     ['History', `${T} sessions · ${state.model.stocks.length} of ${state.universe.stocks.length} stocks`],
     ['Last refresh', a.refreshedAt ? `${ago(a.refreshedAt)} · ${a.requests} requests` : 'never (bundled data)'],
     ['FMP key', key ? `saved · ${key.slice(0, 4)}…` : 'none'],
   ].map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('');
-  $('do-refresh').disabled = !key || state.busy;
+  $('do-refresh').disabled = !key || state.busy || !state.model;
   $('do-refresh').textContent = state.busy ? 'Refreshing…' : 'Refresh prices';
   if (!state.busy) setNote('refresh-note', key
     ? `Fetches the latest quotes for all ${state.universe.stocks.length} stocks with your key (${Math.ceil(state.universe.stocks.length / 100)} requests), plus daily history only for sessions or names that are missing.`
     : 'Add your Financial Modeling Prep key below to refresh prices. Nothing is fetched automatically.');
   $('key').value = '';
-  $('key').placeholder = key ? 'Replace saved key' : 'Paste your Financial Modeling Prep key';
+  $('key').placeholder = key ? 'Replace saved key' : 'FMP API key';
   setNote('key-note', key ? 'Stored only in this browser and sent only to financialmodelingprep.com.' : 'The key never leaves this browser except in requests to FMP.');
 }
 function setNote(id, text, cls = '') { const el = $(id); el.textContent = text; el.className = `note ${cls}`.trim(); }
@@ -416,35 +457,55 @@ function toast(msg, cls = '') {
 
 // ---- FMP refresh (manual only) --------------------------------------------------------
 class FmpError extends Error { constructor(kind, msg) { super(msg); this.kind = kind; } }
-async function fmp(path, params, key, counter) {
+const FATAL = new Set(['key', 'plan', 'rate']);
+/**
+ * One FMP request. `run` is the refresh in progress: its AbortController stops
+ * in-flight requests once anything fatal happens, and its `wait` callback
+ * surfaces a 429 back-off instead of pausing silently.
+ */
+async function fmp(path, params, key, run) {
   const u = new URL(FMP + path);
   for (const k in params) u.searchParams.set(k, params[k]);
   u.searchParams.set('apikey', key);
   for (let attempt = 0; ; attempt++) {
+    if (run.aborted) throw new FmpError('aborted', 'Refresh cancelled');
     let r;
-    counter.n++;
-    try { r = await fetch(u); } catch { throw new FmpError('network', 'Network error: could not reach FMP'); }
+    run.n++;
+    try { r = await fetch(u, { signal: run.ctl.signal }); }
+    catch (e) { throw new FmpError(e.name === 'AbortError' ? 'aborted' : 'network', e.name === 'AbortError' ? 'Refresh cancelled' : 'Network error: could not reach FMP'); }
     if (r.status === 401 || r.status === 403) throw new FmpError('key', 'FMP rejected the API key');
     if (r.status === 402) throw new FmpError('plan', 'Endpoint not included in this FMP plan');
     if (r.status === 429) {
       if (attempt >= 3) throw new FmpError('rate', 'Rate limited by FMP: try again in a minute');
-      await sleep(Math.min(30000, 5000 * 2 ** attempt)); continue;
+      const delay = Math.min(30000, 5000 * 2 ** attempt);
+      if (run.wait) run.wait(delay, attempt + 1);
+      await sleep(delay); continue;
     }
     if (!r.ok) throw new FmpError('http', `FMP error ${r.status}`);
-    return r.json();
+    const body = await r.json();
+    if (!Array.isArray(body)) throw new FmpError('http', 'Unexpected reply from FMP');
+    return body;
   }
 }
-async function mapLimit(items, limit, fn) {
+/** Run fn over items with bounded concurrency; a fatal error aborts the whole run. */
+async function mapLimit(items, limit, run, fn) {
   let i = 0;
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => { while (i < items.length) { const j = i++; await fn(items[j], j); } });
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (i < items.length && !run.aborted) {
+      const j = i++;
+      try { await fn(items[j], j); }
+      catch (e) { if (FATAL.has(e.kind) || e.kind === 'aborted') { run.abort(); throw e; } run.failed.push(items[j].t); }
+    }
+  });
   await Promise.all(workers);
 }
 function progress(text, frac = null) {
+  if (!state.busy && text) return;                          // a worker outliving a failed run must not overwrite the error
   state.busyText = text; renderStatus();
   const bar = $('refresh-progress');
   bar.hidden = !state.busy;
   bar.firstElementChild.style.width = frac === null ? '0' : `${Math.round(frac * 100)}%`;
-  if (openSheetId === 'sheet-data') setNote('refresh-note', text);
+  if (openSheetId === 'sheet-data' && text) setNote('refresh-note', text);
 }
 
 async function refresh() {
@@ -452,13 +513,18 @@ async function refresh() {
   const key = getKey();
   if (!key) { openSheet('sheet-data'); setNote('refresh-note', 'Add your FMP key below, then press Refresh prices.', 'err'); return; }
   state.busy = true; renderStatus(); if (openSheetId === 'sheet-data') renderDataSheet();
-  const counter = { n: 0 }, failed = [], hist = state.history, T = hist.dates.length, L = hist.dates[T - 1];
+  const hist = state.history, T = hist.dates.length, L = hist.dates[T - 1], intradayL = isIntraday();
+  const run = { n: 0, failed: [], aborted: false, ctl: new AbortController(), frac: 0, phase: '',
+    abort() { this.aborted = true; this.ctl.abort(); },
+    wait(ms, attempt) { progress(`Rate limited by FMP · retrying in ${Math.round(ms / 1000)} s (attempt ${attempt} of 3)`, this.frac); } };
+  const step = (text, frac) => { run.phase = text; run.frac = frac; progress(text, frac); };
+  const failed = run.failed;
   try {
     // 1. Quotes for the whole preserved universe (100 symbols per request).
     const symbols = state.universe.stocks.map(s => s.t), quotes = {};
     for (let i = 0; i < symbols.length; i += 100) {
-      progress(`Refreshing · quotes ${Math.min(i + 100, symbols.length)}/${symbols.length}`, i / symbols.length * .3);
-      for (const q of await fmp('batch-quote', { symbols: symbols.slice(i, i + 100).join(',') }, key, counter)) quotes[q.symbol] = q;
+      step(`Refreshing · quotes ${Math.min(i + 100, symbols.length)}/${symbols.length}`, i / symbols.length * .3);
+      for (const q of await fmp('batch-quote', { symbols: symbols.slice(i, i + 100).join(',') }, key, run)) quotes[q.symbol] = q;
     }
     const dateOf = {}, freq = {};
     for (const [t, q] of Object.entries(quotes)) {
@@ -470,14 +536,25 @@ async function refresh() {
     if (Q < L) throw new FmpError('http', `Quotes are dated ${fmtDate(Q)}, before the stored history (${fmtDate(L)})`);
     const ts = Math.max(...Object.entries(quotes).filter(([t]) => dateOf[t] === Q).map(([, q]) => q.timestamp));
 
-    // 2. Which sessions lie between the stored history and the quote session? One reference call.
+    // 2. Which sessions lie between the stored history and the quote session? Two reference
+    //    names' daily history, checked against each other and the calendar before it is trusted.
     let gap = [];
     if (Q > L) {
-      progress('Refreshing · checking sessions', .32);
-      const ref = await fmp('historical-price-eod/light', { symbol: REF_SYMBOL, from: L, to: Q }, key, counter);
-      gap = ref.map(r => r.date).filter(d => d > L && d < Q).sort();
+      step('Refreshing · checking sessions', .32);
+      const seen = new Set(); let anchored = false;
+      for (const ref of REF_SYMBOLS) {
+        const rows = await fmp('historical-price-eod/light', { symbol: ref, from: L, to: Q }, key, run);
+        for (const r of rows) { if (r.date === L) anchored = true; if (r.date > L && r.date < Q) seen.add(r.date); }
+      }
+      if (!anchored) throw new FmpError('http', 'FMP returned no session data for the reference names; nothing was changed');
+      gap = [...seen].sort();
+      const weekdays = weekdaysBetween(L, Q);
+      if (weekdays - gap.length > Math.ceil(weekdays / 20) + 1) throw new FmpError('http', `FMP history looks incomplete (${gap.length} of ${weekdays} weekdays since ${fmtDate(L)}); nothing was changed`);
     }
     const dates = Q > L ? [...hist.dates, ...gap, Q] : hist.dates.slice(), N = dates.length, idx = new Map(dates.map((d, k) => [d, k]));
+    // The stored value for L is an intraday snapshot when the last refresh ran during the session:
+    // it is replaced by the official close (previousClose when Q follows L directly, else re-fetched).
+    const refetchL = Q > L && intradayL && gap.length > 0;
 
     // 3. Extend every series; note which names need a history request.
     const px = {}, need = [];
@@ -486,8 +563,10 @@ async function refresh() {
       if (!old) { px[t] = new Array(N).fill(null); need.push({ t, from: dates[0], full: true }); continue; }
       const arr = old.slice();
       if (Q > L) {
-        if (gap.length === 1) arr.push(d === Q && q.previousClose > 0 ? q.previousClose : null);
-        else if (gap.length > 1) { for (const _ of gap) arr.push(null); need.push({ t, from: gap[0], to: Q }); }
+        if (gap.length === 0 && d === Q && q.previousClose > 0) arr[arr.length - 1] = q.previousClose;   // L's official close
+        if (gap.length === 1) arr.push(d === Q && q.previousClose > 0 && !refetchL ? q.previousClose : null);
+        else if (gap.length > 1) for (const _ of gap) arr.push(null);
+        if (refetchL || gap.length > 1) need.push({ t, from: refetchL ? L : gap[0], to: Q });
         arr.push(d === Q ? q.price : d > Q && q.previousClose > 0 ? q.previousClose : null);
       } else if (d === Q) arr[arr.length - 1] = q.price;
       px[t] = arr;
@@ -497,44 +576,47 @@ async function refresh() {
         if (arr.slice(lo, N - (Q > L ? 1 : 0)).some(v => v === null)) need.push({ t, from: dates[lo], to: Q });
       }
     }
-    const applyRows = (t, rows, replace) => {
+    // Daily closes from FMP overwrite the requested range; the quote stays the freshest value for Q.
+    const applyRows = (t, rows, from, replace) => {
       if (replace) px[t].fill(null);
-      for (const r of rows) { const k = idx.get(r.date); if (k !== undefined && r.price > 0 && (replace || px[t][k] === null)) px[t][k] = r.price; }
-      if (dateOf[t] === Q && quotes[t].price > 0) px[t][N - 1] = quotes[t].price;   // the quote is the freshest value for Q
+      const k0 = replace ? 0 : idx.get(from) ?? N;
+      for (const r of rows) { const k = idx.get(r.date); if (k !== undefined && r.price > 0 && k >= k0) px[t][k] = r.price; }
+      if (dateOf[t] === Q && quotes[t].price > 0) px[t][N - 1] = quotes[t].price;
     };
     if (need.length) {
       let done = 0;
-      progress(`Refreshing · history 0/${need.length}`, .35);
-      await mapLimit(need, 5, async item => {
-        try {
-          const params = { symbol: item.t, from: item.from }; if (item.to) params.to = item.to;
-          applyRows(item.t, await fmp('historical-price-eod/light', params, key, counter), !!item.full);
-        } catch (e) { if (e.kind === 'key' || e.kind === 'rate' || e.kind === 'plan') throw e; failed.push(item.t); }
-        done++; progress(`Refreshing · history ${done}/${need.length}`, .35 + .55 * done / need.length);
+      step(`Refreshing · history 0/${need.length}`, .35);
+      await mapLimit(need, 5, run, async item => {
+        const params = { symbol: item.t, from: item.from }; if (item.to) params.to = item.to;
+        applyRows(item.t, await fmp('historical-price-eod/light', params, key, run), item.from, !!item.full);
+        done++; step(`Refreshing · history ${done}/${need.length}`, .35 + .55 * done / need.length);
       });
     }
     // 4. A new move beyond ±40% is most likely a split: re-download that name's adjusted history.
     const suspects = symbols.filter(t => !need.some(x => x.t === t && x.full) && px[t].some((v, k) => k >= T - 1 && k > 0 && v > 0 && px[t][k - 1] > 0 && Math.abs(Math.log(v / px[t][k - 1])) > SPLIT_JUMP));
     if (suspects.length) {
-      progress(`Refreshing · checking ${suspects.length} possible splits`, .92);
-      await mapLimit(suspects, 5, async t => {
-        try { applyRows(t, await fmp('historical-price-eod/light', { symbol: t, from: dates[0] }, key, counter), true); }
-        catch (e) { if (e.kind === 'key' || e.kind === 'rate' || e.kind === 'plan') throw e; failed.push(t); }
+      step(`Refreshing · checking ${suspects.length} possible splits`, .92);
+      await mapLimit(suspects.map(t => ({ t })), 5, run, async item => {
+        applyRows(item.t, await fmp('historical-price-eod/light', { symbol: item.t, from: dates[0] }, key, run), dates[0], true);
       });
     }
     // 5. Keep a bounded window, persist, recompute.
     const cut = Math.max(0, N - MAX_SESSIONS);
     const next = { dates: dates.slice(cut), px: Object.fromEntries(Object.entries(px).filter(([, a]) => a.some(v => v > 0)).map(([t, a]) => [t, a.slice(cut)])) };
     state.history = next;
-    state.asOf = { session: Q, ts, refreshedAt: new Date().toISOString(), requests: counter.n };
-    await Promise.all([idb.set('history', encodeBundle(next)), idb.set('meta', state.asOf)]);
+    state.asOf = { session: Q, ts, refreshedAt: new Date().toISOString(), requests: run.n };
+    let saved = true;
+    try { await Promise.all([idb.set('history', encodeBundle(next)), idb.set('meta', state.asOf)]); } catch { saved = false; }
     state.busy = false; progress('');
     rebuild();
-    const fail = failed.length ? ` · ${failed.length} name${failed.length > 1 ? 's' : ''} failed` : '';
-    const msg = `Updated · ${fmtDate(Q)} ${isIntraday() ? nyTime(ts) : 'close'} · ${counter.n} request${counter.n === 1 ? '' : 's'}${fail}`;
-    if (openSheetId === 'sheet-data') { renderDataSheet(); setNote('refresh-note', msg, failed.length ? 'err' : 'ok'); }
-    else toast(msg, failed.length ? '' : 'ok');
+    const uniq = [...new Set(failed)];
+    const fail = uniq.length ? ` · ${uniq.length} name${uniq.length > 1 ? 's' : ''} failed` : '';
+    const msg = `Updated · ${fmtDate(Q)} ${isIntraday() ? nyTime(ts) : 'close'} · ${run.n} request${run.n === 1 ? '' : 's'}${fail}${saved ? '' : ' · not saved: browser storage unavailable, data resets on reload'}`;
+    const cls = uniq.length || !saved ? 'err' : 'ok';
+    if (openSheetId === 'sheet-data') { renderDataSheet(); setNote('refresh-note', msg, cls); }
+    else toast(msg, cls === 'ok' ? 'ok' : '');
   } catch (e) {
+    run.abort();
     state.busy = false; progress('');
     const msg = e instanceof FmpError ? e.message : `Refresh failed: ${e.message}`;
     if (e.kind === 'key') { openSheet('sheet-data'); setNote('key-note', 'FMP rejected this key. Check it and save again.', 'err'); }
@@ -548,6 +630,7 @@ function wire() {
   $('btn-settings').onclick = () => openSheet('sheet-settings');
   $('chips').onclick = () => openSheet('sheet-settings');
   $('status').onclick = () => openSheet('sheet-data');
+  dragToDismiss($('sheet-settings')); dragToDismiss($('sheet-data'));
   $('btn-refresh').onclick = () => refresh();
   $('do-refresh').onclick = () => refresh();
   $('backdrop').onclick = closeSheet;
@@ -568,7 +651,8 @@ function wire() {
     const k = $('key').value.trim();
     if (!k) { setNote('key-note', 'Paste a key first.', 'err'); return; }
     store.set('fmpKey', k); renderDataSheet(); setNote('key-note', 'Saved. Testing the key with one quote request…');
-    try { await fmp('batch-quote', { symbols: 'AAPL' }, k, { n: 0 }); setNote('key-note', 'Key accepted by FMP (1 request). Press Refresh prices to use it.', 'ok'); }
+    const run = { n: 0, aborted: false, ctl: new AbortController() };
+    try { await fmp('batch-quote', { symbols: 'AAPL' }, k, run); setNote('key-note', 'Key accepted by FMP (1 request). Press Refresh prices to use it.', 'ok'); }
     catch (e) { setNote('key-note', e.kind === 'key' ? 'FMP rejected this key. Check it and save again.' : `Saved, but the test failed: ${e.message}`, 'err'); }
   };
   $('key').onkeydown = e => { if (e.key === 'Enter') $('key-save').click(); };
