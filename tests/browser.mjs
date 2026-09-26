@@ -379,6 +379,42 @@ function mockFmp(page, { date = L, hh = 16, mm = 0, sessions = [], splits = {}, 
   await ctx.close();
 }
 
+// ---- 5c. motion: pills, scrubbing, reduced motion ----------------------------------------
+{
+  const { ctx, page, log } = await newPage();
+  await load(page);
+  await page.waitForTimeout(700);
+  await page.click('#btn-settings'); await page.waitForTimeout(400);
+  const pillOn = await page.evaluate(() => { const seg = document.querySelector('#sheet-settings .seg'); const on = seg.querySelector('button[aria-pressed="true"]'), pill = seg.querySelector('.pill');
+    return Math.abs(pill.getBoundingClientRect().left - on.getBoundingClientRect().left) < 2 && Math.abs(pill.getBoundingClientRect().width - on.getBoundingClientRect().width) < 2; });
+  check(pillOn, 'segmented pill sits under the pressed button');
+  await page.click('[data-window="6m"]'); await page.waitForTimeout(450);
+  const pillMoved = await page.evaluate(() => { const seg = document.querySelector('#sheet-settings .seg'); const on = seg.querySelector('button[aria-pressed="true"]'), pill = seg.querySelector('.pill'); return on.dataset.window === '6m' && Math.abs(pill.getBoundingClientRect().left - on.getBoundingClientRect().left) < 2; });
+  check(pillMoved, 'pill follows the new selection');
+  await page.click('[data-flag="residual"]'); await page.waitForTimeout(700);
+  const settled = await rows(page);
+  check(settled[0].v === (await rows(page))[0].v && /^[+\u2212]\d+\.\d%$/.test(settled[0].v), `values settle after the tick animation: ${settled[0].v}`);
+  await page.click('#sheet-settings [data-close]'); await page.waitForTimeout(400);
+  await page.click('.list .row[data-t="NVDA"]'); await page.waitForSelector('#detail.on'); await page.waitForTimeout(700);
+  const price = await page.textContent('.d-price');
+  await page.hover('#chart svg', { position: { x: 100, y: 100 } }); await page.waitForTimeout(60);
+  check((await page.textContent('.d-price')) !== price, 'scrubbing moves the headline price');
+  await page.mouse.move(2, 2); await page.waitForTimeout(60);
+  check((await page.textContent('.d-price')) === price, 'headline price restores after scrubbing');
+  check(log.errors.length === 0, `console clean: ${JSON.stringify(log.errors)}`);
+  await ctx.close();
+}
+{
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, reducedMotion: 'reduce' });
+  const page = await ctx.newPage(); await curlTransport(page);
+  const errs = []; page.on('pageerror', e => errs.push(e.message));
+  await load(page);
+  check((await rows(page)).length > 850 && (await page.evaluate(() => document.getAnimations().length)) === 0, 'reduced motion: full list, no running animations');
+  await page.click('#btn-settings'); await page.click('[data-flag="vol"]'); await page.waitForTimeout(100);
+  check((await page.evaluate(() => document.getAnimations().length)) === 0 && errs.length === 0, 'reduced motion: settings change without animations');
+  await ctx.close();
+}
+
 // ---- 6. viewports --------------------------------------------------------------------------
 for (const [name, vp, mobile] of [['320', { width: 320, height: 640 }, true], ['430', { width: 430, height: 932 }, true], ['desktop', { width: 1280, height: 800 }, false]]) {
   const { ctx, page, log } = await newPage(vp, mobile);

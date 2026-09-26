@@ -67,6 +67,32 @@ if (!['none', 'bench', 'resid'].includes(state.overlay)) state.overlay = 'none';
 if (!['one', 'two'].includes(state.settings.factors)) state.settings.factors = 'one';
 const getKey = () => store.get('fmpKey', '');
 
+// ---- motion --------------------------------------------------------------------
+// Motion is decoration: every animation lands on the same final DOM the static
+// render produces, and none runs when the user asks for reduced motion.
+const MOTION = !matchMedia('(prefers-reduced-motion: reduce)').matches;
+const EASE = 'cubic-bezier(.2, .8, .2, 1)';
+const inView = el => { const r = el.getBoundingClientRect(); return r.bottom > -r.height && r.top < innerHeight + r.height; };
+/** Tween a number and write it through fmt on every frame (~250 ms). */
+function tween(from, to, fmt, ms = 260) {
+  if (!MOTION || from === to || !(from === from) || !(to === to)) { fmt(to); return; }
+  const t0 = performance.now();
+  const step = now => { const k = Math.min(1, (now - t0) / ms), e = 1 - (1 - k) ** 3; fmt(from + (to - from) * e); if (k < 1) requestAnimationFrame(step); };
+  requestAnimationFrame(step);
+}
+/** Sliding pill under the pressed button of every segmented control. */
+function layoutPills(root = document) {
+  root.querySelectorAll('.seg').forEach(seg => {
+    let pill = seg.querySelector(':scope > .pill');
+    if (!pill) { pill = document.createElement('span'); pill.className = 'pill'; seg.prepend(pill); }
+    const on = seg.querySelector('button[aria-pressed="true"]');
+    if (!on) { pill.style.opacity = '0'; return; }
+    pill.style.opacity = '1';
+    pill.style.transform = `translateX(${on.offsetLeft}px)`; pill.style.width = `${on.offsetWidth}px`;
+    if (!seg.classList.contains('ready')) requestAnimationFrame(() => seg.classList.add('ready'));   // no slide on first layout
+  });
+}
+
 // ---- formatting --------------------------------------------------------------
 const sign = v => v < 0 ? '−' : '+';
 const fmtPct = (v, d = 1) => sign(v) + (Math.abs(v) * 100).toFixed(d) + '%';
@@ -141,22 +167,28 @@ function pool() {
 function recompute() {
   const scopeKey = `${state.scope.index}|${state.scope.group || ''}`;
   state.prevRank = scopeKey === state.prevPoolKey ? new Map(state.ranking.rows.map(r => [r.t, r.rank])) : null;
+  state.prevRows = state.prevRank ? state.rowByTicker : null;
   state.prevPoolKey = scopeKey;
   state.ranking = rankPool(state.model, pool(), state.settings);
   state.rowByTicker = new Map(state.ranking.rows.map(r => [r.t, r]));
-  render();
+  render(true);
 }
 
 // ---- rendering -----------------------------------------------------------------
-function render() {
-  renderStatus(); renderChips(); renderHist(); renderList(); renderScope(); renderFilter();
+function render(animate = false) {
+  renderStatus(); renderChips(); renderHist(animate); renderList(animate); renderScope(); renderFilter();
+  layoutPills();
   if (state.cur) renderDetail(state.cur, true);
 }
 
 function renderStatus() {
-  const a = state.asOf;
-  $('status-text').textContent = state.busy ? state.busyText
+  const a = state.asOf, el = $('status-text');
+  const text = state.busy ? state.busyText
     : `${fmtDate(a.session, { month: 'short', day: 'numeric' })} ${isIntraday() ? 'live' : 'close'} · ${a.refreshedAt ? 'updated ' + ago(a.refreshedAt) : 'not refreshed'}`;
+  if (el.textContent !== text) {
+    if (MOTION && !state.busy && el.textContent) el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 300 });
+    el.textContent = text;
+  }
   $('btn-refresh').classList.toggle('busy', state.busy);
 }
 
@@ -193,7 +225,18 @@ function histogramSVG(values, { mark = null, width = 360, height = 56, bins = 48
   if (labels) out += `<text x="0" y="${height - 2}">\u2264 ${esc(fmtScore(lo))}</text><text x="${width}" y="${height - 2}" text-anchor="end">\u2265 ${esc(fmtScore(hi))}</text>`;
   return out + '</svg>';
 }
-function renderHist() { $('hist').innerHTML = histogramSVG(state.ranking.rows.map(r => r.score), { width: $('hist').clientWidth || 360 }); }
+function renderHist(animate = false) {
+  const box = $('hist');
+  const before = animate && MOTION ? [...box.querySelectorAll('rect')].map(r => ({ y: +r.getAttribute('y'), h: +r.getAttribute('height') })) : [];
+  box.innerHTML = histogramSVG(state.ranking.rows.map(r => r.score), { width: box.clientWidth || 360 });
+  const rects = [...box.querySelectorAll('rect')];
+  if (before.length !== rects.length) return;
+  rects.forEach((r, i) => {
+    const y1 = +r.getAttribute('y'), h1 = +r.getAttribute('height'), b = before[i];
+    if (b.y === y1 && b.h === h1) return;
+    try { r.animate([{ y: `${b.y}px`, height: `${b.h}px` }, { y: `${y1}px`, height: `${h1}px` }], { duration: 380, easing: EASE }); } catch { /* geometry not animatable here */ }
+  });
+}
 
 function renderScope() {
   document.querySelectorAll('[data-scope]').forEach(b => b.setAttribute('aria-pressed', b.dataset.scope === state.scope.index));
@@ -217,8 +260,11 @@ function rowHTML(row) {
     `<span class="id"><span class="tk">${esc(row.t)}${mv}</span><span class="nm">${esc(s ? s.n : '')}</span></span>` +
     `<span class="val"><span class="sc ${cls}">${displayText(row)}</span><span class="sub">${esc(sub)}</span></span></li>`;
 }
-function renderList() {
-  const q = state.query.trim().toUpperCase();
+function renderList(animate = false) {
+  const q = state.query.trim().toUpperCase(), list = $('list');
+  // FLIP: remember where the visible rows are, re-render, then slide them from there.
+  const before = new Map();
+  if (animate && MOTION) for (const li of list.children) if (li.dataset.t && inView(li)) before.set(li.dataset.t, li.getBoundingClientRect().top);
   let rows = state.ranking.rows, extra = '';
   if (q) {
     const match = t => t.startsWith(q) || (state.model.byTicker.get(t) || { n: '' }).n.toUpperCase().includes(q);
@@ -229,14 +275,41 @@ function renderList() {
         `<span class="val"><span class="sc flat">—</span><span class="sub">${esc(x.reason)}</span></span></li>`;
     }).join('');
   }
-  $('list').dataset.display = state.settings.display;
-  $('list').innerHTML = rows.length || extra ? rows.map(rowHTML).join('') + extra
+  list.dataset.display = state.settings.display;
+  list.innerHTML = rows.length || extra ? rows.map(rowHTML).join('') + extra
     : `<li class="empty">${q ? 'No matches.' : 'Nothing to rank with these settings.'}</li>`;
+  if (MOTION) animateRows(list, before, animate);
   const ex = state.ranking.excluded.length, noHist = state.universe.stocks.length - state.model.stocks.length;
   const bits = [];
   if (ex) bits.push(`${ex} not ranked (insufficient history${state.settings.residual || state.settings.r2 ? ' or benchmark' : ''})`);
   if (noHist) bits.push(`${noHist} without price data — refresh to fetch`);
   $('foot').textContent = bits.join(' · ');
+}
+
+/** Slide visible rows from their previous positions, tick their numbers, flash refreshed prices. */
+function animateRows(list, before, animate) {
+  let i = 0;
+  for (const li of list.children) {
+    const t = li.dataset.t;
+    if (!t || !inView(li)) { if (i > 40) break; i++; continue; }
+    i++;
+    if (state.firstPaint) { li.animate([{ opacity: 0, transform: 'translateY(8px)' }, { opacity: 1, transform: 'none' }], { duration: 320, delay: Math.min(i, 14) * 22, easing: EASE, fill: 'backwards' }); continue; }
+    if (animate) {
+      const top = before.get(t);
+      if (top !== undefined) {
+        const dy = top - li.getBoundingClientRect().top;
+        if (dy) li.animate([{ transform: `translateY(${dy}px)` }, { transform: 'none' }], { duration: 380, easing: EASE });
+      } else if (before.size) li.animate([{ opacity: 0, transform: 'translateY(10px)' }, { opacity: 1, transform: 'none' }], { duration: 300, easing: EASE });
+      const prev = state.prevRows && state.prevRows.get(t), row = state.rowByTicker.get(t), sc = li.querySelector('.sc');
+      if (prev && row && sc && !(state.settings.display === 'rank' && prev.rank === row.rank)) {
+        const key = { raw: 'score', z: 'z', pct: 'pct', rank: 'rank' }[state.settings.display];
+        tween(prev[key], row[key], v => { sc.textContent = displayText({ ...row, [key]: v }); });
+      }
+    }
+    const f = state.flash && state.flash.get(t);
+    if (f) li.animate([{ backgroundColor: f > 0 ? 'var(--up-dim)' : 'var(--dn-dim)' }, { backgroundColor: 'transparent' }], { duration: 1400, easing: 'ease-out' });
+  }
+  state.firstPaint = false; state.flash = null;
 }
 
 // ---- detail page -----------------------------------------------------------------
@@ -323,6 +396,7 @@ function renderDetail(t, keepScroll = false) {
     </section>`;
   drawChart(t);
   if (fit.level) drawScatter(t);
+  layoutPills($('detail'));
   document.querySelectorAll('[data-hz]').forEach(b => b.onclick = () => { state.hz = b.dataset.hz; store.set('hz', state.hz); renderDetail(t, true); });
   document.querySelectorAll('[data-overlay]').forEach(b => b.onclick = () => { state.overlay = b.dataset.overlay; store.set('overlay', state.overlay); renderDetail(t, true); });
   $('peers-link').onclick = () => { if (!s.g) return; state.scope.group = s.g; state.query = ''; $('search').value = ''; closeDetail(); recompute(); window.scrollTo({ top: 0 }); };
@@ -370,9 +444,22 @@ ${bench ? `<path class="${state.overlay === 'resid' ? 'rl' : 'bl'}" d="${path(be
 <path class="ln" d="${d}" stroke="${col}"/>
 <g id="hover" style="display:none"><line class="hair" y1="${padT}" y2="${H - padB}"/><circle class="dot" r="4.5" fill="${col}"/></g></svg><div class="tip" id="tip" hidden></div>`;
   const chg = last - first;
-  $('hzc').textContent = `${sign(chg)}$${money(Math.abs(chg))} (${fmtPct(chg / first, 2)})`;
+  const hzcText = `${sign(chg)}$${money(Math.abs(chg))} (${fmtPct(chg / first, 2)})`;
+  $('hzc').textContent = hzcText;
   $('hzc').style.color = col;
-  const svg = $('csvg'), hov = $('hover'), tip = $('tip');
+  const svg = $('csvg'), hov = $('hover'), tip = $('tip'), line = svg.querySelector('.ln'), areaEl = svg.querySelector('.ar');
+  // Draw the line on when the ticker or the window changes (not on every re-render).
+  const drawKey = `${t}|${state.hz}`;
+  if (MOTION && drawKey !== state.drawKey && line.getTotalLength) {
+    const len = line.getTotalLength();
+    line.style.strokeDasharray = `${len}`; line.style.strokeDashoffset = `${len}`;
+    line.animate([{ strokeDashoffset: len }, { strokeDashoffset: 0 }], { duration: 520, easing: 'ease-out' }).onfinish = () => { line.style.strokeDasharray = ''; line.style.strokeDashoffset = ''; };
+    areaEl.animate([{ opacity: 0 }, { opacity: .14 }], { duration: 520, easing: 'ease-out' });
+  }
+  state.drawKey = drawKey;
+  // Scrubbing: the headline price and window change follow the finger, and snap back on release.
+  const priceEl = $('d-body').querySelector('.d-price'), priceText = priceEl ? priceEl.textContent : '';
+  let lastI = -1;
   const move = e => {
     const r = svg.getBoundingClientRect(), fx = (e.clientX - r.left) / r.width * W;
     let i = Math.round((fx - padL) / (W - padL - padR) * (ys.length - 1)); i = Math.max(0, Math.min(ys.length - 1, i));
@@ -384,8 +471,12 @@ ${bench ? `<path class="${state.overlay === 'resid' ? 'rl' : 'bl'}" d="${path(be
     tip.innerHTML = `${esc(fmtDate(xs[i], { month: 'short', day: 'numeric', year: 'numeric' }))} <b>$${money(ys[i])}</b>${bench && bench[i] > 0 ? ` · ${state.overlay === 'resid' ? 'residual' : 'bench'} $${money(bench[i])}` : ''}`;
     const half = tip.offsetWidth / 2 + 4;
     tip.style.left = Math.max(half, Math.min(W - half, x)) + 'px';
+    if (priceEl) { priceEl.textContent = `$${money(ys[i])}`; const c = ys[i] - first; $('hzc').textContent = `${sign(c)}$${money(Math.abs(c))} (${fmtPct(c / first, 2)})`; $('hzc').style.color = c >= 0 ? 'var(--up)' : 'var(--dn)'; }
+    if (i !== lastI && e.pointerType === 'touch' && navigator.vibrate) navigator.vibrate(3);
+    lastI = i;
   };
-  const hide = () => { hov.style.display = 'none'; tip.hidden = true; };
+  const hide = () => { hov.style.display = 'none'; tip.hidden = true; lastI = -1;
+    if (priceEl) { priceEl.textContent = priceText; $('hzc').textContent = hzcText; $('hzc').style.color = col; } };
   svg.onpointermove = move; svg.onpointerdown = move;
   svg.onpointerleave = e => { if (e.pointerType !== 'touch') hide(); };   // a touch readout stays until the next tap elsewhere
   $('d-body').onpointerdown = e => { if (!box.contains(e.target)) hide(); };
@@ -430,6 +521,7 @@ function openSheet(id) {
   document.body.classList.add('locked');
   $('app').inert = true; $('detail').inert = true;
   if (id === 'sheet-settings') renderSettings(); else renderDataSheet();
+  layoutPills($(id));
   $(id).querySelector('[data-close]').focus({ preventScroll: true });
 }
 function closeSheet() {
@@ -443,13 +535,23 @@ function closeSheet() {
 }
 /** Drag the handle or header down to dismiss (phones; the desktop dialog is centred). */
 function dragToDismiss(sheet) {
-  let y0 = null, dy = 0;
+  let y0 = null, dy = 0, vy = 0, lastY = 0, lastT = 0;
+  const backdrop = $('backdrop');
   sheet.addEventListener('pointerdown', e => {
     if (window.innerWidth >= 720 || e.target.closest('button') || !e.target.closest('.grab, .sheet-top')) return;
-    y0 = e.clientY; dy = 0; sheet.style.transition = 'none'; sheet.setPointerCapture(e.pointerId);
+    y0 = lastY = e.clientY; lastT = e.timeStamp; dy = vy = 0; sheet.style.transition = 'none'; backdrop.style.transition = 'none'; sheet.setPointerCapture(e.pointerId);
   });
-  sheet.addEventListener('pointermove', e => { if (y0 === null) return; dy = Math.max(0, e.clientY - y0); sheet.style.transform = `translateY(${dy}px)`; });
-  const end = () => { if (y0 === null) return; y0 = null; sheet.style.transition = ''; if (dy > 80) closeSheet(); else sheet.style.transform = ''; };
+  sheet.addEventListener('pointermove', e => {
+    if (y0 === null) return;
+    const raw = e.clientY - y0; dy = raw < 0 ? raw / 4 : raw;                 // rubber-band upwards
+    const dt = e.timeStamp - lastT; if (dt > 0) vy = (e.clientY - lastY) / dt; lastY = e.clientY; lastT = e.timeStamp;
+    sheet.style.transform = `translateY(${dy}px)`;
+    backdrop.style.opacity = `${Math.max(0, 1 - Math.max(0, dy) / sheet.offsetHeight)}`;
+  });
+  const end = () => {
+    if (y0 === null) return; y0 = null; sheet.style.transition = ''; backdrop.style.transition = ''; backdrop.style.opacity = '';
+    if (dy > 80 || vy > 0.6) closeSheet(); else sheet.style.transform = '';
+  };
   sheet.addEventListener('pointerup', end); sheet.addEventListener('pointercancel', end);
 }
 function renderSettings() {
@@ -458,6 +560,7 @@ function renderSettings() {
   document.querySelectorAll('[data-display]').forEach(b => b.setAttribute('aria-pressed', b.dataset.display === s.display));
   document.querySelectorAll('[data-factors]').forEach(b => b.setAttribute('aria-pressed', b.dataset.factors === s.factors));
   document.querySelectorAll('[data-flag]').forEach(i => { i.checked = !!s[i.dataset.flag]; });
+  layoutPills($('sheet-settings'));
 }
 function setSettings(patch) {
   Object.assign(state.settings, patch);
@@ -676,7 +779,11 @@ async function refresh() {
     let saved = true;
     try { await Promise.all([idb.set('history', encodeBundle(next)), idb.set('meta', state.asOf)]); } catch { saved = false; }
     state.busy = false; progress('');
+    // Rows whose latest price moved flash briefly after the re-render.
+    state.flash = new Map();
+    for (const t of symbols) { const a = hist.px[t], b = next.px[t]; if (a && b) { const d = b[b.length - 1] - a[a.length - 1]; if (d && a[a.length - 1] > 0 && b[b.length - 1] > 0) state.flash.set(t, d); } }
     rebuild();
+    refreshDone(true);
     const uniq = [...new Set(failed)];
     const fail = uniq.length ? ` · ${uniq.length} name${uniq.length > 1 ? 's' : ''} failed` : '';
     const msg = `Updated · ${fmtDate(Q)} ${isIntraday() ? nyTime(ts) : 'close'} · ${run.n} request${run.n === 1 ? '' : 's'}${fail}${saved ? '' : ' · not saved: browser storage unavailable, data resets on reload'}`;
@@ -686,11 +793,23 @@ async function refresh() {
   } catch (e) {
     run.abort();
     state.busy = false; progress('');
+    refreshDone(false);
     const msg = e instanceof FmpError ? e.message : `Refresh failed: ${e.message}`;
     if (e.kind === 'key') { openSheet('sheet-data'); setNote('key-note', 'FMP rejected this key. Check it and save again.', 'err'); }
     if (openSheetId === 'sheet-data') { $('do-refresh').disabled = !getKey(); $('do-refresh').textContent = 'Refresh prices'; setNote('refresh-note', msg, 'err'); }
     else toast(msg, 'err');
   }
+}
+
+/** The refresh icon morphs into a check (or shakes) for a moment when a refresh ends. */
+function refreshDone(ok) {
+  const btn = $('btn-refresh'), use = btn.querySelector('use');
+  if (!MOTION) return;
+  if (ok) {
+    use.setAttribute('href', '#i-check'); btn.classList.add('ok');
+    btn.animate([{ transform: 'scale(.8)' }, { transform: 'scale(1.12)' }, { transform: 'scale(1)' }], { duration: 360, easing: EASE });
+    setTimeout(() => { use.setAttribute('href', '#i-refresh'); btn.classList.remove('ok'); }, 1400);
+  } else btn.animate([{ transform: 'translateX(0)' }, { transform: 'translateX(-4px)' }, { transform: 'translateX(4px)' }, { transform: 'translateX(0)' }], { duration: 300 });
 }
 
 // ---- wiring ----------------------------------------------------------------------------
@@ -729,7 +848,7 @@ function wire() {
   const bar = document.createElement('div'); bar.className = 'progress'; bar.id = 'refresh-progress'; bar.innerHTML = '<i></i>'; bar.hidden = true;
   $('refresh-note').after(bar);
   let rt = null;
-  window.onresize = () => { clearTimeout(rt); rt = setTimeout(() => { if (!state.model) return; renderHist(); if (state.cur) drawChart(state.cur); }, 120); };
+  window.onresize = () => { clearTimeout(rt); rt = setTimeout(() => { if (!state.model) return; renderHist(); layoutPills(); if (state.cur) drawChart(state.cur); }, 120); };
 }
 
 async function init() {
@@ -737,6 +856,7 @@ async function init() {
   $('list').innerHTML = Array.from({ length: 12 }, (_, i) => `<li class="row"><span class="rk">${i + 1}</span><span class="id"><span class="sk" style="width:${40 + (i * 13) % 30}px"></span><span class="sk" style="width:${90 + (i * 29) % 80}px;height:9px"></span></span><span class="val"><span class="sk" style="width:56px"></span></span></li>`).join('');
   $('list').classList.add('skeleton');
   try {
+    state.firstPaint = true;
     await loadData();
     $('list').classList.remove('skeleton');
     const t = location.hash.slice(1);
