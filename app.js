@@ -90,6 +90,7 @@ function layoutPills(root = document) {
     let pill = seg.querySelector(':scope > .pill');
     if (!pill) { pill = document.createElement('span'); pill.className = 'pill'; seg.prepend(pill); }
     const on = seg.querySelector('button[aria-pressed="true"]');
+    if (!seg.offsetWidth) { seg.classList.remove('ready'); return; }      // hidden: lay out when shown, without a slide
     if (!on) { pill.style.opacity = '0'; return; }
     pill.style.opacity = '1';
     pill.style.transform = `translateX(${on.offsetLeft}px)`; pill.style.width = `${on.offsetWidth}px`;
@@ -123,7 +124,7 @@ function ago(iso) {
 }
 const displayText = row => {
   const d = state.settings.display;
-  return d === 'z' ? fmtNum(row.z) : d === 'pct' ? `${Math.floor(row.pct)}%` : d === 'rank' ? `#${row.rank}` : fmtScore(row.score);
+  return d === 'z' ? fmtNum(row.z) : d === 'pct' ? `${Math.floor(row.pct)}%` : d === 'rank' ? `#${Math.round(row.rank)}` : fmtScore(row.score);
 };
 const rawLabel = () => `${state.settings.vol ? 'Vol-adjusted' : 'Annualized'} ${state.settings.residual ? 'residual' : 'log'} return${state.settings.r2 ? ' × R²' : ''}`;
 const displayLabel = () => ({ raw: rawLabel(), z: 'Z-score', pct: 'Percentile', rank: 'Rank' })[state.settings.display];
@@ -167,19 +168,21 @@ function rebuild() {
 // Rankings as they stood a week and a month ago are recomputed from the stored
 // history (the model built on the history cut at T-5 and T-21), in idle time
 // after the first paint, then re-ranked instantly on every settings change.
-let pastTimer = null;
+let pastTimer = null, pastGen = 0;
 function schedulePast() {
   clearTimeout(pastTimer);
-  const run = () => {
-    const m = state.model;
-    const past = {};
-    for (const [k, back] of Object.entries(PAST)) past[k] = buildModel(state.universe, truncateHistory(state.history, back));
-    if (state.model !== m) return;                              // a refresh replaced the model meanwhile
+  const gen = ++pastGen, pending = Object.keys(PAST), past = {};
+  const idle = fn => ('requestIdleCallback' in window ? requestIdleCallback(fn, { timeout: 2000 }) : setTimeout(fn, 0));
+  const run = () => {                                            // one model per idle slot
+    if (gen !== pastGen) return;                                 // a newer schedule (refresh) superseded this one
+    const k = pending.shift();
+    past[k] = buildModel(state.universe, truncateHistory(state.history, PAST[k]));
+    if (pending.length) { idle(run); return; }
     state.past = past;
     rankPast();
     renderList(); if (state.cur) renderDetail(state.cur, true);
   };
-  pastTimer = setTimeout(() => ('requestIdleCallback' in window ? requestIdleCallback(run, { timeout: 2000 }) : run()), 250);
+  pastTimer = setTimeout(() => idle(run), 250);
 }
 function rankPast() {
   if (!state.past) { state.pastRanks = null; return; }
@@ -207,10 +210,12 @@ function recompute() {
   const scopeKey = `${state.scope.index}|${state.scope.group || ''}`;
   state.prevRank = scopeKey === state.prevPoolKey ? new Map(state.ranking.rows.map(r => [r.t, r.rank])) : null;
   state.prevRows = state.prevRank ? rowLookup() : null;
+  state.prevGroupRank = state.prevRank && state.groups ? new Map(state.groups.map(g => [g.t, g.rank])) : null;
   state.prevPoolKey = scopeKey;
   state.ranking = rankPool(state.model, pool(), state.settings);
   state.rowByTicker = new Map(state.ranking.rows.map(r => [r.t, r]));
   state.groups = rankGroups(state.model, state.ranking.rows);
+  state.groupSize = new Map(); for (const t of pool()) { const g = state.model.byTicker.get(t).g; if (g) state.groupSize.set(g, (state.groupSize.get(g) || 0) + 1); }
   state.groupByName = new Map(state.groups.map(g => [g.t, g]));
   rankPast();
   render(true);
@@ -288,6 +293,7 @@ function renderScope() {
   document.querySelectorAll('[data-scope]').forEach(b => b.setAttribute('aria-pressed', b.dataset.scope === state.scope.index));
   document.querySelectorAll('[data-view]').forEach(b => b.setAttribute('aria-pressed', b.dataset.view === state.view));
   $('search').parentElement.hidden = state.view === 'groups';
+  $('list').setAttribute('aria-label', groupsMode() ? 'Ranked peer groups' : 'Ranked stocks');
 }
 function renderFilter() {
   const g = state.scope.group;
@@ -315,7 +321,7 @@ function groupHTML(g) {
   let mv = '';
   if (state.prevGroupRank && state.prevGroupRank.has(g.t)) { const dd = state.prevGroupRank.get(g.t) - g.rank; if (dd) mv = `<span class="mv ${dd > 0 ? 'up' : 'dn'}">${dd > 0 ? '▲' : '▼'}${Math.abs(dd)}</span>`; }
   return `<li class="row group" data-t="${esc(g.t)}" data-g="1" role="button" tabindex="0"><span class="rk">${g.rank}</span>` +
-    `<span class="id"><span class="tk">${esc(g.t)}${mv}</span><span class="nm">${esc(g.sector)} · ${g.n} names · ${esc(g.top)} leads</span></span>` +
+    `<span class="id"><span class="tk">${esc(g.t)}${mv}</span><span class="nm">${esc(g.top)} leads · ${g.n}${state.groupSize && state.groupSize.get(g.t) > g.n ? ` of ${state.groupSize.get(g.t)}` : ''} names · ${esc(g.sector)}</span></span>` +
     `<span class="val"><span class="sc ${cls}">${displayText(g)}</span><span class="sub">${esc(sub)}${pastDelta(g.t, g.rank, 'groups')}</span></span></li>`;
 }
 function renderList(animate = false) {
@@ -327,7 +333,6 @@ function renderList(animate = false) {
     list.dataset.display = state.settings.display;
     list.innerHTML = state.groups.length ? state.groups.map(groupHTML).join('') : '<li class="empty">Nothing to rank with these settings.</li>';
     if (MOTION) animateRows(list, before, animate);
-    state.prevGroupRank = new Map(state.groups.map(g => [g.t, g.rank]));
     $('foot').textContent = 'Each group is the equal-weight mean of its members\u2019 scores. Tap a group to see its names.';
     return;
   }
@@ -357,7 +362,10 @@ function animateRows(list, before, animate) {
   let i = 0;
   for (const li of list.children) {
     const t = li.dataset.t;
-    if (!t || !inView(li)) { if (i > 40) break; i++; continue; }
+    if (!t) continue;
+    const box = li.getBoundingClientRect();
+    if (box.bottom < 0) continue;
+    if (box.top > innerHeight || i > 40) break;
     i++;
     if (state.firstPaint) { li.animate([{ opacity: 0, transform: 'translateY(8px)' }, { opacity: 1, transform: 'none' }], { duration: 320, delay: Math.min(i, 14) * 22, easing: EASE, fill: 'backwards' }); continue; }
     if (animate) {
@@ -369,7 +377,7 @@ function animateRows(list, before, animate) {
       const prev = state.prevRows && state.prevRows.get(t), row = rowLookup().get(t), sc = li.querySelector('.sc');
       if (prev && row && sc && !(state.settings.display === 'rank' && prev.rank === row.rank)) {
         const key = { raw: 'score', z: 'z', pct: 'pct', rank: 'rank' }[state.settings.display];
-        tween(prev[key], row[key], v => { sc.textContent = displayText({ ...row, [key]: v }); });
+        tween(prev[key], row[key], v => { sc.textContent = displayText({ ...row, [key]: key === 'rank' ? Math.round(v) : v }); });
       }
     }
     const f = state.flash && state.flash.get(t);
@@ -527,7 +535,8 @@ ${bench ? `<path class="${state.overlay === 'resid' ? 'rl' : 'bl'}" d="${path(be
   }
   state.drawKey = drawKey;
   // Scrubbing: the headline price and window change follow the finger, and snap back on release.
-  const priceEl = $('d-body').querySelector('.d-price'), priceText = priceEl ? priceEl.textContent : '';
+  const priceEl = $('d-body').querySelector('.d-price'), priceText = `$${money(p[T - 1] > 0 ? p[T - 1] : last)}`;
+  if (priceEl) priceEl.textContent = priceText;
   let lastI = -1;
   const move = e => {
     const r = svg.getBoundingClientRect(), fx = (e.clientX - r.left) / r.width * W;
@@ -589,7 +598,7 @@ function openSheet(id) {
   openSheetId = id;
   const peek = id === 'sheet-settings';
   state.sheetFocus = document.activeElement;
-  $(id).hidden = false; $(id).style.transform = '';
+  $(id).hidden = false; $(id).style.transform = ''; $(id).querySelector('.sheet-body').scrollTop = 0;
   requestAnimationFrame(() => $(id).classList.add('on'));
   if (peek) {
     document.documentElement.style.setProperty('--sheet-h', `${$(id).offsetHeight}px`);
@@ -610,7 +619,8 @@ function closeSheet() {
   $('app').classList.remove('peek');
   $('detail').inert = false; $('app').inert = !!state.cur;
   if (!state.cur) document.body.classList.remove('locked');
-  if (state.sheetFocus && state.sheetFocus.focus) state.sheetFocus.focus({ preventScroll: true });
+  const inside = el.contains(document.activeElement) || document.activeElement === document.body;
+  if (inside && state.sheetFocus && state.sheetFocus.focus) state.sheetFocus.focus({ preventScroll: true });
   state.sheetFocus = null;
 }
 /** Drag the handle or header down to dismiss (phones; the desktop dialog is centred). */
@@ -637,7 +647,7 @@ function dragToDismiss(sheet) {
 function renderSettings() {
   const s = state.settings;
   document.querySelectorAll('[data-window]').forEach(b => b.setAttribute('aria-pressed', b.dataset.window === s.window));
-  document.querySelectorAll('[data-display]').forEach(b => b.setAttribute('aria-pressed', b.dataset.display === s.display));
+  document.querySelectorAll('#sheet-settings [data-display]').forEach(b => b.setAttribute('aria-pressed', b.dataset.display === s.display));
   document.querySelectorAll('[data-factors]').forEach(b => b.setAttribute('aria-pressed', b.dataset.factors === s.factors));
   document.querySelectorAll('[data-flag]').forEach(i => { i.checked = !!s[i.dataset.flag]; });
   layoutPills($('sheet-settings'));
@@ -742,7 +752,7 @@ async function refresh() {
   if (state.busy || !state.model) return;
   const key = getKey();
   if (!key) { openSheet('sheet-data'); setNote('refresh-note', 'Add your FMP key below, then press Refresh prices.', 'err'); return; }
-  state.busy = true; renderStatus(); if (openSheetId === 'sheet-data') renderDataSheet();
+  state.busy = true; refreshDone(null); renderStatus(); if (openSheetId === 'sheet-data') renderDataSheet();
   const hist = state.history, T = hist.dates.length, L = hist.dates[T - 1], intradayL = isIntraday();
   const run = { n: 0, failed: [], aborted: false, ctl: new AbortController(), frac: 0, phase: '',
     abort() { this.aborted = true; this.ctl.abort(); },
@@ -884,14 +894,17 @@ async function refresh() {
 }
 
 /** The refresh icon morphs into a check (or shakes) for a moment when a refresh ends. */
+let okTimer = null;
 function refreshDone(ok) {
   const btn = $('btn-refresh'), use = btn.querySelector('use');
-  if (!MOTION) return;
+  const restore = () => { use.setAttribute('href', '#i-refresh'); btn.classList.remove('ok'); };
+  clearTimeout(okTimer);
+  if (ok === null || !MOTION) { restore(); return; }            // null: a refresh is starting, just reset
   if (ok) {
     use.setAttribute('href', '#i-check'); btn.classList.add('ok');
     btn.animate([{ transform: 'scale(.8)' }, { transform: 'scale(1.12)' }, { transform: 'scale(1)' }], { duration: 360, easing: EASE });
-    setTimeout(() => { use.setAttribute('href', '#i-refresh'); btn.classList.remove('ok'); }, 1400);
-  } else btn.animate([{ transform: 'translateX(0)' }, { transform: 'translateX(-4px)' }, { transform: 'translateX(4px)' }, { transform: 'translateX(0)' }], { duration: 300 });
+    okTimer = setTimeout(restore, 1400);
+  } else { restore(); btn.animate([{ transform: 'translateX(0)' }, { transform: 'translateX(-4px)' }, { transform: 'translateX(4px)' }, { transform: 'translateX(0)' }], { duration: 300 }); }
 }
 
 // ---- membership check (manual; reports only, changes nothing) ----------------------------
@@ -920,9 +933,11 @@ async function checkMembership() {
   const key = getKey(), note = 'member-note', btn = $('do-members');
   if (!key) { setNote(note, 'Add your FMP key first: the S&P 500 list comes from FMP.', 'err'); return; }
   btn.disabled = true; setNote(note, 'Checking the S&P 500 (FMP) and S&P 400 (Wikipedia) lists…');
-  const run = { n: 0, aborted: false, ctl: new AbortController() };
+  const run = { n: 0, aborted: false, ctl: new AbortController(), abort() { this.aborted = true; this.ctl.abort(); },
+    wait(ms, attempt) { setNote(note, `Rate limited by FMP · retrying in ${Math.round(ms / 1000)} s (attempt ${attempt} of 3)`); } };
   try {
     const [sp500, sp400] = await Promise.all([fmp('sp500-constituent', {}, key, run), fetchSp400()]);
+    if (!Array.isArray(sp500) || sp500.length < 450) throw new Error(`FMP returned only ${Array.isArray(sp500) ? sp500.length : 0} S&P 500 names; not compared`);
     const live = new Map();
     for (const c of sp500) live.set(c.symbol, { t: c.symbol, n: c.name || '', i: '500' });
     for (const c of sp400) if (!live.has(c.t)) live.set(c.t, { t: c.t, n: c.n, i: '400' });
@@ -930,24 +945,30 @@ async function checkMembership() {
     // represented is not an addition.
     const bundled = new Map(state.universe.stocks.map(s => [s.t, s]));
     const bundledCompanies = new Set(state.universe.stocks.map(s => classKey(s.n)));
-    const adds = [...live.values()].filter(c => !bundled.has(c.t) && !bundledCompanies.has(classKey(c.n)));
+    // A live symbol is a redundant second class only if the bundled company is still in the live
+    // lists; otherwise it is a rename or class swap and shows up as an add beside the drop.
+    const stillLive = new Set(state.universe.stocks.filter(s => live.has(s.t)).map(s => classKey(s.n)));
+    const seen = new Set();
+    const adds = [...live.values()].filter(c => !bundled.has(c.t) && !stillLive.has(classKey(c.n))).filter(c => { const k = classKey(c.n); if (seen.has(k)) return false; seen.add(k); return true; });
     const drops = state.universe.stocks.filter(s => !live.has(s.t));
     const moves = state.universe.stocks.filter(s => live.has(s.t) && live.get(s.t).i !== s.i);
-    const list = (arr, f) => arr.map(f).join(', ');
+    const list = (arr, f) => arr.slice(0, 20).map(f).join(', ') + (arr.length > 20 ? ` … and ${arr.length - 20} more` : '');
+    const nb = x => x.replace(/ /g, '\u00a0');
     const parts = [];
-    if (adds.length) parts.push(`${adds.length} to add: ${list(adds, c => `${c.t} (${c.i})`)}`);
+    if (adds.length) parts.push(`${adds.length} to add: ${list(adds, c => nb(`${c.t} (${c.i})`))}`);
     if (drops.length) parts.push(`${drops.length} to drop: ${list(drops, s => s.t)}`);
-    if (moves.length) parts.push(`${moves.length} moved: ${list(moves, s => `${s.t} ${s.i}→${live.get(s.t).i}`)}`);
-    setNote(note, parts.length ? `${parts.join('. ')}. Nothing was changed: rebuild the data bundle to apply (${run.n + 1} requests).`
+    if (moves.length) parts.push(`${moves.length} moved: ${list(moves, s => nb(`${s.t} ${s.i}→${live.get(s.t).i}`))}`);
+    setNote(note, parts.length ? `${parts.join('.\n')}.\nNothing was changed: rebuild the data bundle to apply (${run.n + 1} requests).`
       : `The bundle matches today's S&P 500 and 400 lists (${live.size} names, ${run.n + 1} requests).`, parts.length ? '' : 'ok');
   } catch (e) { setNote(note, e.message || 'Check failed', 'err'); }
-  finally { btn.disabled = !getKey(); }
+  finally { run.abort(); btn.disabled = !getKey(); $(note).scrollIntoView({ block: 'nearest' }); }
 }
 
 // ---- wiring ----------------------------------------------------------------------------
 function wire() {
-  $('btn-settings').onclick = () => openSheet('sheet-settings');
-  $('chips').onclick = () => openSheet('sheet-settings');
+  const toggleSettings = () => openSheetId === 'sheet-settings' ? closeSheet() : openSheet('sheet-settings');
+  $('btn-settings').onclick = toggleSettings;
+  $('chips').onclick = toggleSettings;
   $('status').onclick = () => openSheet('sheet-data');
   dragToDismiss($('sheet-settings')); dragToDismiss($('sheet-data'));
   $('btn-refresh').onclick = () => refresh();
@@ -962,14 +983,14 @@ function wire() {
   });
   document.querySelectorAll('[data-close]').forEach(b => b.onclick = closeSheet);
   document.querySelectorAll('[data-window]').forEach(b => b.onclick = () => setSettings({ window: b.dataset.window }));
-  document.querySelectorAll('[data-display]').forEach(b => b.onclick = () => setSettings({ display: b.dataset.display }));
+  document.querySelectorAll('#sheet-settings [data-display]').forEach(b => b.onclick = () => setSettings({ display: b.dataset.display }));
   document.querySelectorAll('[data-factors]').forEach(b => b.onclick = () => setSettings({ factors: b.dataset.factors }));
   document.querySelectorAll('[data-flag]').forEach(i => i.onchange = () => setSettings({ [i.dataset.flag]: i.checked }));
   $('reset').onclick = () => setSettings({ ...DEFAULT_SETTINGS });
   document.querySelectorAll('[data-scope]').forEach(b => b.onclick = () => { state.scope.index = b.dataset.scope; recompute(); });
-  $('filter-clear').onclick = () => { state.scope.group = null; state.prevPoolKey = ''; recompute(); };
+  $('filter-clear').onclick = () => { state.scope.group = null; state.prevPoolKey = ''; recompute(); const li = $('list').querySelector('li[data-t]'); if (li) li.focus({ preventScroll: true }); };
   $('search').oninput = e => { state.query = e.target.value; renderList(); };
-  const pick = li => { if (li.dataset.g) { state.scope.group = li.dataset.t; state.query = ''; $('search').value = ''; recompute(); window.scrollTo({ top: 0 }); } else openDetail(li.dataset.t); };
+  const pick = li => { if (li.dataset.g) { state.scope.group = li.dataset.t; state.query = ''; $('search').value = ''; recompute(); window.scrollTo({ top: 0 }); $('filter-clear').focus({ preventScroll: true }); } else openDetail(li.dataset.t); };
   $('list').onclick = e => { const li = e.target.closest('li[data-t]'); if (li) pick(li); };
   $('list').onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { const li = e.target.closest('li[data-t]'); if (li) { e.preventDefault(); pick(li); } } };
   document.querySelectorAll('[data-view]').forEach(b => b.onclick = () => { state.view = b.dataset.view; store.set('view', state.view); state.scope.group = null; state.prevPoolKey = ''; recompute(); });
@@ -989,7 +1010,8 @@ function wire() {
   const bar = document.createElement('div'); bar.className = 'progress'; bar.id = 'refresh-progress'; bar.innerHTML = '<i></i>'; bar.hidden = true;
   $('refresh-note').after(bar);
   let rt = null;
-  window.onresize = () => { clearTimeout(rt); rt = setTimeout(() => { if (!state.model) return; renderHist(); layoutPills(); if (state.cur) drawChart(state.cur); }, 120); };
+  window.onresize = () => { clearTimeout(rt); rt = setTimeout(() => { if (!state.model) return; renderHist(); layoutPills(); if (state.cur) drawChart(state.cur);
+    if (openSheetId === 'sheet-settings') document.documentElement.style.setProperty('--sheet-h', `${$('sheet-settings').offsetHeight}px`); }, 120); };
 }
 
 async function init() {

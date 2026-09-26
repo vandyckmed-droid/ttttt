@@ -92,6 +92,10 @@ body.locked { overflow: hidden; }
 .seg.scope, .seg.view { flex: 1 1 auto; }
 .seg.view button, .seg.scope button { padding: 0 8px; }
 .row.group .nm { font-size: 12.5px; }
+.row.group .tk { font-size: 15px; line-height: 1.2; flex-wrap: wrap; overflow-wrap: anywhere; }
+.row.group .sc { font-size: 15px; }
+#member-note { white-space: pre-line; }
+@media (max-width: 359px) { .pd { margin-left: 4px; font-size: 11.5px; } .sub { font-size: 12px; } .row { gap: 8px; } }
 .filter .dim { color: var(--fg-3); }
 .filter { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 6px 0 0; padding: 8px 6px 8px 12px; border-radius: 12px; background: var(--card); color: var(--fg-2); font-size: 14px; }
 .filter b { color: var(--fg); font-weight: 600; }
@@ -211,7 +215,7 @@ body.locked { overflow: hidden; }
 .sheet.on { transform: none; }
 #sheet-settings { max-height: 52vh; max-height: 52dvh; box-shadow: 0 -10px 36px rgba(0, 0, 0, .6); border-top: 1px solid var(--line); }
 .grab { flex: none; width: 36px; height: 4px; border-radius: 2px; background: var(--fg-3); margin: 6px auto 8px; }
-.sheet-top { flex: none; display: flex; align-items: center; justify-content: space-between; padding: 0 16px 6px; }
+.sheet-top { flex: none; display: flex; align-items: center; justify-content: space-between; padding: 0 16px 6px; border-bottom: 1px solid var(--line); }
 .sheet-body { flex: 1; min-height: 0; overflow: auto; padding: 0 16px calc(18px + var(--safe-b)); touch-action: pan-y; }
 .sheet-top h2 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -.01em; }
 .sheet-body h3 { margin: 18px 0 8px; font-size: 13px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--fg-2); }

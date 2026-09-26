@@ -487,7 +487,7 @@ function mockFmp(page, { date = L, hh = 16, mm = 0, sessions = [], splits = {}, 
   await page.click('#do-members');
   await page.waitForFunction(() => /to add|matches/.test(document.getElementById('member-note').textContent), null, { timeout: 15000 });
   const note = await page.textContent('#member-note');
-  check(/1 to add: NEWCO \(500\)/.test(note) && /2 to drop: AAPL, ATI/.test(note) && /1 moved: SNDK 500→400/.test(note) && !/GOOG/.test(note), `membership report: ${note}`);
+  check(/1 to add: NEWCO\u00a0\(500\)/.test(note) && /2 to drop: AAPL, ATI/.test(note) && /1 moved: SNDK\u00a0500→400/.test(note) && !/GOOG/.test(note), `membership report: ${note}`);
   check(/Nothing was changed/.test(note) && (await rows(page)).length > 850, 'report only; the universe is untouched');
   await ctx.close();
 }
