@@ -8,7 +8,7 @@ import {
 const FMP = 'https://financialmodelingprep.com/stable/';
 const REF_SYMBOLS = ['AAPL', 'MSFT'];   // their daily history tells us which sessions a refresh must fill
 const MAX_SESSIONS = 800;           // keep a little more than the 3-year regression window
-const SPLIT_JUMP = Math.log(1.4);   // a new daily move beyond ±40% triggers a full re-download of that name
+const SPLIT_JUMP = Math.log(1.2);   // a new daily move beyond ±20% triggers a full re-download of that name (splits)
 const RECONCILE_SESSIONS = 21;      // at least every 21 sessions, re-fetch every name's adjusted series (dividends)
 const ADJ = 'historical-price-eod/dividend-adjusted';   // dividend- and split-adjusted closes (the stored series)
 const HORIZONS = { '1M': 21, '3M': 63, '6M': 126, '1Y': 252, '3Y': 756 };
@@ -71,6 +71,7 @@ const getKey = () => store.get('fmpKey', '');
 const sign = v => v < 0 ? '−' : '+';
 const fmtPct = (v, d = 1) => sign(v) + (Math.abs(v) * 100).toFixed(d) + '%';
 const fmtNum = (v, d = 2) => sign(v) + Math.abs(v).toFixed(d);
+const fmtBeta = v => (v < 0 ? '\u2212' : '') + Math.abs(v).toFixed(2);
 const fmtScore = v => state.settings.vol ? fmtNum(v) : fmtPct(v);
 const money = v => v >= 1000 ? v.toLocaleString('en-US', { maximumFractionDigits: 2, minimumFractionDigits: 2 }) : v.toFixed(2);
 const fmtDate = (s, opts = { weekday: 'short', month: 'short', day: 'numeric' }) => {
@@ -292,8 +293,8 @@ function renderDetail(t, keepScroll = false) {
   const lvl = { peer: 'Peer group', sector: 'Sector', universe: 'S&P 900' }, twoF = act && act.factors === 2;
   const regCard = `
     ${fit.level ? `<div class="bench"><span class="bench-lv">${lvl[fit.level]} benchmark${fit.level !== 'peer' ? ' · fallback' : ''}${twoF ? ' + market' : ''}</span><b>${esc(fit.name)}${twoF ? ' <span class="plus">+ S&amp;P 900</span>' : ''}</b><span class="hint">Equal-weight, leave-one-out · ${fit.peers} other names${twoF ? ' · two factors fitted jointly' : ''}</span>${fit.level !== 'peer' ? `<span class="hint">Peer group ${esc(fit.tried[0].name)} not used: ${esc(fit.tried[0].reason.replace('peers', 'other names'))}</span>` : ''}</div>
-    ${twoF ? `<div class="kv"><span>Beta · ${esc(fit.name)}</span><b>${act.beta[0].toFixed(2)}</b></div><div class="kv"><span>Beta · S&amp;P 900</span><b>${act.beta[1].toFixed(2)}</b></div>`
-           : `<div class="kv"><span>Beta</span><b>${act.beta.toFixed(2)}</b></div>`}
+    ${twoF ? `<div class="kv"><span>Beta · ${esc(fit.name)}</span><b>${fmtBeta(act.beta[0])}</b></div><div class="kv"><span>Beta · S&amp;P 900</span><b>${fmtBeta(act.beta[1])}</b></div>`
+           : `<div class="kv"><span>Beta</span><b>${fmtBeta(act.beta)}</b></div>`}
     <div class="kv"><span>Alpha (annualized)</span><b>${fmtPct(act.alpha * MODEL.YEAR)}</b></div>
     <div class="kv"><span>R²</span><b>${act.r2.toFixed(2)}</b></div>
     <div class="kv"><span>Idiosyncratic volatility<span class="hint">residual sd, annualized</span></span><b>${(act.resid * Math.sqrt(MODEL.YEAR) * 100).toFixed(1)}%</b></div>
@@ -301,7 +302,7 @@ function renderDetail(t, keepScroll = false) {
     <div class="scatter" id="scatter"></div>
     <p class="note">Each dot is one session: the stock's daily log return against its benchmark's; the line is the one-factor fit.</p>`
     : `<p class="note">No viable benchmark: this name has too little overlapping history for a ${MODEL.BETA_WINDOW}-session regression (min ${MODEL.MIN_OBS} sessions).</p>`}
-    <ul class="tried">${fit.tried.map(x => `<li class="${x.level === fit.level ? 'used' : ''}"><span class="lv">${x.level}</span><span class="nm">${esc(x.name || '')}</span><span class="why">${x.ok ? `β ${x.beta.toFixed(2)} · R² ${x.r2.toFixed(2)}${x.level === fit.level ? ' · used' : ''}` : esc(x.reason)}</span></li>`).join('')}</ul>
+    <ul class="tried">${fit.tried.map(x => `<li class="${x.level === fit.level ? 'used' : ''}"><span class="lv">${x.level}</span><span class="nm">${esc(x.name || '')}</span><span class="why">${x.ok ? `β ${fmtBeta(x.beta)} · R² ${x.r2.toFixed(2)}${x.level === fit.level ? ' · used' : ''}` : esc(x.reason)}</span></li>`).join('')}</ul>
     <p class="note">The peer group is used when it has at least ${MODEL.MIN_PEERS} other names and ${MODEL.MIN_OBS} overlapping sessions; otherwise the sector, otherwise the whole S&P 900.</p>`;
 
   $('d-body').innerHTML = `
@@ -310,9 +311,9 @@ function renderDetail(t, keepScroll = false) {
     <div class="chart-wrap" id="chart"></div>
     <div class="chart-ctl">
       <div class="seg" role="group" aria-label="Chart window">${Object.keys(HORIZONS).map(h => `<button type="button" data-hz="${h}" aria-pressed="${h === state.hz}">${h}</button>`).join('')}</div>
-      <div class="seg overlay" role="group" aria-label="Overlay">${[['none', 'Price'], ['bench', 'Benchmark'], ['resid', 'Residual']].map(([k, l]) => `<button type="button" data-overlay="${k}" aria-pressed="${k === state.overlay}" ${k !== 'none' && !fit.bench ? 'disabled' : ''}>${l}</button>`).join('')}</div>
+      <div class="seg overlay" role="group" aria-label="Overlay">${[['none', 'Price'], ['bench', 'Benchmark'], ['resid', 'Residual']].map(([k, l]) => `<button type="button" data-overlay="${k}" aria-pressed="${k === state.overlay}" ${k !== 'none' && !fit.bench ? 'disabled title="No benchmark for this name"' : ''}>${l}</button>`).join('')}</div>
     </div>
-    <p class="chart-note">Adjusted for dividends and splits; the latest value is the last traded price.${state.overlay === 'bench' ? ' Dashed: the benchmark applied to the same starting price.' : state.overlay === 'resid' ? ' Dotted: the stock net of β × benchmark (what residual momentum measures).' : ''}</p>
+    <p class="chart-note">Adjusted for dividends and splits; the latest value is the last traded price.${state.overlay === 'bench' ? ' Dashed: the benchmark applied to the same starting price.' : state.overlay === 'resid' ? ` Dotted: the stock net of ${act && act.factors === 2 ? 'β₁ × benchmark + β₂ × S&amp;P 900' : 'β × benchmark'} (what residual momentum measures).` : ''}</p>
     <section class="card"><h3>Momentum</h3>${momCard}</section>
     <section class="card"><h3>Regression · 3 years</h3>${regCard}</section>
     <section class="card"><h3>Company</h3>
@@ -394,24 +395,28 @@ ${bench ? `<path class="${state.overlay === 'resid' ? 'rl' : 'bl'}" d="${path(be
 function drawScatter(t) {
   const box = $('scatter'), fit = state.model.fits.get(t), r = state.model.ret.get(t), T = state.model.T;
   if (!box || !fit.bench) return;
-  const W = box.clientWidth || 360, H = 190, pad = 18, from = Math.max(1, T - MODEL.BETA_WINDOW);
+  const W = Math.min(box.clientWidth || 360, 360), H = Math.round(W * 0.8), padX = 18, padT = 20, padB = 34, from = Math.max(1, T - MODEL.BETA_WINDOW);
   const pts = [];
   for (let k = from; k <= T - 1; k++) { const x = fit.bench[k], y = r[k]; if (x === x && y === y) pts.push([x, y]); }
   if (pts.length < 3) { box.innerHTML = ''; return; }
   const q = (arr, p) => { const s = arr.slice().sort((a, b) => a - b); return s[Math.round(p * (s.length - 1))]; };
   const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
   const lim = Math.max(Math.abs(q(xs, .005)), Math.abs(q(xs, .995)), Math.abs(q(ys, .005)), Math.abs(q(ys, .995))) * 1.05 || 0.01;
-  const X = v => pad + (v + lim) / (2 * lim) * (W - 2 * pad), Y = v => H - pad - (v + lim) / (2 * lim) * (H - 2 * pad);
-  const clamp = v => Math.max(-lim, Math.min(lim, v));
-  const dots = pts.map(([x, y]) => `<circle cx="${X(clamp(x)).toFixed(1)}" cy="${Y(clamp(y)).toFixed(1)}" r="1.6"/>`).join('');
-  const x0 = -lim, x1 = lim, y0 = fit.alpha + fit.beta * x0, y1 = fit.alpha + fit.beta * x1;
+  const X = v => padX + (v + lim) / (2 * lim) * (W - 2 * padX), Y = v => H - padB - (v + lim) / (2 * lim) * (H - padT - padB);
+  // Sessions beyond the 0.5%..99.5% box are drawn hollow at the edge so they are not read as data.
+  const dots = pts.map(([x, y]) => { const out = Math.abs(x) > lim || Math.abs(y) > lim;
+    return `<circle class="${out ? 'edge' : ''}" cx="${X(Math.max(-lim, Math.min(lim, x))).toFixed(1)}" cy="${Y(Math.max(-lim, Math.min(lim, y))).toFixed(1)}" r="1.6"/>`; }).join('');
+  // The fitted line is clipped to the box, not clamped, so its slope stays beta.
+  const f = x => fit.alpha + fit.beta * x;
+  let xa = -lim, xb = lim;
+  if (Math.abs(fit.beta) > 1e-12) { const e1 = (-lim - fit.alpha) / fit.beta, e2 = (lim - fit.alpha) / fit.beta; xa = Math.max(-lim, Math.min(e1, e2)); xb = Math.min(lim, Math.max(e1, e2)); }
   const pct = v => (v * 100).toFixed(0) + '%';
   box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" aria-hidden="true">
-<line class="ax" x1="${pad}" x2="${W - pad}" y1="${Y(0).toFixed(1)}" y2="${Y(0).toFixed(1)}"/><line class="ax" y1="${pad}" y2="${H - pad}" x1="${X(0).toFixed(1)}" x2="${X(0).toFixed(1)}"/>
+<line class="ax" x1="${padX}" x2="${W - padX}" y1="${Y(0).toFixed(1)}" y2="${Y(0).toFixed(1)}"/><line class="ax" y1="${padT}" y2="${H - padB}" x1="${X(0).toFixed(1)}" x2="${X(0).toFixed(1)}"/>
 <g class="pts">${dots}</g>
-<line class="fit" x1="${X(x0).toFixed(1)}" y1="${Y(clamp(y0)).toFixed(1)}" x2="${X(x1).toFixed(1)}" y2="${Y(clamp(y1)).toFixed(1)}"/>
-<text x="${W - pad}" y="${(Y(0) - 4).toFixed(1)}" text-anchor="end">benchmark ${pct(lim)}</text><text x="${(X(0) + 4).toFixed(1)}" y="${pad + 4}">stock ${pct(lim)}</text>
-<text x="${pad}" y="${H - 4}">β ${fit.beta.toFixed(2)} · R² ${fit.r2.toFixed(2)} · ${pts.length} sessions</text></svg>`;
+<line class="fit" x1="${X(xa).toFixed(1)}" y1="${Y(f(xa)).toFixed(1)}" x2="${X(xb).toFixed(1)}" y2="${Y(f(xb)).toFixed(1)}"/>
+<text x="${(X(0) + 4).toFixed(1)}" y="13">stock ±${pct(lim)}</text><text x="${W - padX}" y="${H - 6}" text-anchor="end">benchmark ±${pct(lim)}</text>
+<text x="${padX}" y="${H - 6}">${state.settings.factors === 'two' ? 'one-factor ' : ''}β ${fmtBeta(fit.beta)} · R² ${fit.r2.toFixed(2)} · ${pts.length} sessions</text></svg>`;
 }
 
 // ---- sheets -----------------------------------------------------------------------
@@ -473,14 +478,14 @@ function renderDataSheet() {
   $('data-facts').innerHTML = [
     ['Prices through', `${fmtDate(a.session, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })} ${isIntraday() ? 'live ' + nyTime(a.ts) : 'close'}`],
     ['History', `${T} sessions · ${state.model.stocks.length} of ${state.universe.stocks.length} stocks`],
-    ['Adjusted through', fmtDate(a.reconciled || a.session, { month: 'short', day: 'numeric' })],
+    ['Adjusted through', `${fmtDate(a.reconciled || a.session, { month: 'short', day: 'numeric' })}${a.pending && a.pending.length ? ` · ${a.pending.length} pending` : ''}`],
     ['Last refresh', a.refreshedAt ? `${ago(a.refreshedAt)} · ${a.requests} requests` : 'never (bundled data)'],
     ['FMP key', key ? `saved · ${key.slice(0, 4)}…` : 'none'],
   ].map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('');
   $('do-refresh').disabled = !key || state.busy || !state.model;
   $('do-refresh').textContent = state.busy ? 'Refreshing…' : 'Refresh prices';
   if (!state.busy) setNote('refresh-note', key
-    ? `Fetches the latest quotes for all ${state.universe.stocks.length} stocks with your key (${Math.ceil(state.universe.stocks.length / 100)} requests), plus daily history only for sessions or names that are missing.`
+    ? `Quotes for all ${state.universe.stocks.length} stocks (${Math.ceil(state.universe.stocks.length / 100)} requests), 2 calendar requests when a session is added, and history only for missing sessions or names. Every ${RECONCILE_SESSIONS} sessions it re-fetches each name's adjusted series to pick up dividends and splits (about ${state.universe.stocks.length} requests); next in ${Math.max(0, RECONCILE_SESSIONS - T + Math.max(0, state.history.dates.indexOf(a.reconciled || '') + 1))} sessions.`
     : 'Add your Financial Modeling Prep key below to refresh prices. Nothing is fetched automatically.');
   $('key').value = '';
   $('key').placeholder = key ? 'Replace saved key' : 'FMP API key';
@@ -600,8 +605,13 @@ async function refresh() {
     // value for the anchor differs from the stored one, a dividend (or split) has gone ex since, and
     // every earlier stored value is rescaled by the same factor, keeping the whole series adjusted.
     // At least every RECONCILE_SESSIONS sessions this is done for every name.
-    const anchorIdx = intradayL ? Math.max(0, T - 2) : T - 1, anchor = hist.dates[anchorIdx];
+    // The anchor is the session before the last recorded adjustment pass: every stored value up to
+    // it came from FMP's adjusted series, so FMP's value there moves only if a dividend or split
+    // went ex after it, including on sessions appended by quotes-only refreshes since. It is never
+    // the last stored session, whose value is a quote.
+    const recIdx = Math.max(0, Math.min(T - 2, hist.dates.indexOf(state.asOf.reconciled || '') - 1)), anchor = hist.dates[recIdx];
     const sinceReconcile = hist.dates.filter(d => d > (state.asOf.reconciled || '')).length + (Q > L ? gap.length + 1 : 0);
+    const pending = new Set(state.asOf.pending || []);             // names whose last adjustment fetch failed
     const reconcileAll = sinceReconcile >= RECONCILE_SESSIONS;
 
     // 3. Extend every series; note which names need a history request.
@@ -614,18 +624,15 @@ async function refresh() {
         if (gap.length === 0 && d === Q && q.previousClose > 0) arr[arr.length - 1] = q.previousClose;   // L's official close
         if (gap.length === 1) arr.push(d === Q && q.previousClose > 0 && !refetchL ? q.previousClose : null);
         else if (gap.length > 1) for (const _ of gap) arr.push(null);
-        if (refetchL || gap.length > 1 || reconcileAll) need.push({ t, from: anchor, to: Q });
+        if (refetchL || gap.length > 1 || reconcileAll || pending.has(t)) need.push({ t, from: anchor, to: Q });
         arr.push(d === Q ? q.price : d > Q && q.previousClose > 0 ? q.previousClose : null);
       } else {
         if (d === Q) arr[arr.length - 1] = q.price;
-        if (reconcileAll) need.push({ t, from: anchor, to: Q });
+        if (reconcileAll || pending.has(t)) need.push({ t, from: anchor, to: Q });
       }
       px[t] = arr;
       // Repair: a hole in the last few sessions (a name that had no quote last time) is refilled.
-      if (!need.some(x => x.t === t)) {
-        const lo = Math.min(anchorIdx, Math.max(0, N - 7));
-        if (arr.slice(lo, N - (Q > L ? 1 : 0)).some(v => v === null)) need.push({ t, from: dates[lo], to: Q });
-      }
+      if (!need.some(x => x.t === t) && arr.slice(Math.max(0, N - 7), N - (Q > L ? 1 : 0)).some(v => v === null)) need.push({ t, from: anchor, to: Q });
     }
     // Adjusted closes from FMP overwrite the requested range; values before the anchor are rescaled
     // when the anchor moved; the quote stays the freshest value for Q.
@@ -635,7 +642,7 @@ async function refresh() {
       else {
         const k0 = idx.get(from) ?? N;
         let ka = -1, factor = 1;
-        for (const r of rows) { const k = idx.get(r.date); if (k !== undefined && k >= k0 && r.adjClose > 0 && a[k] > 0 && (ka < 0 || k < ka)) { ka = k; factor = r.adjClose / a[k]; } }
+        for (const r of rows) { const k = idx.get(r.date); if (k !== undefined && k >= k0 && k < N - 1 && r.adjClose > 0 && a[k] > 0 && (ka < 0 || k < ka)) { ka = k; factor = r.adjClose / a[k]; } }
         if (ka >= 0 && Math.abs(factor - 1) > 5e-4) for (let k = 0; k < ka; k++) if (a[k] > 0) a[k] = a[k] * factor;
       }
       for (const r of rows) { const k = idx.get(r.date); if (k !== undefined && r.adjClose > 0 && (replace || k >= (idx.get(from) ?? N))) a[k] = r.adjClose; }
@@ -662,8 +669,10 @@ async function refresh() {
     const cut = Math.max(0, N - MAX_SESSIONS);
     const next = { dates: dates.slice(cut), px: Object.fromEntries(Object.entries(px).filter(([, a]) => a.some(v => v > 0)).map(([t, a]) => [t, a.slice(cut)])) };
     state.history = next;
-    const everyName = symbols.every(t => need.some(x => x.t === t));
-    state.asOf = { session: Q, ts, refreshedAt: new Date().toISOString(), requests: run.n, reconciled: everyName && !failed.length ? Q : (state.asOf.reconciled || hist.dates[0]) };
+    // A full pass records the adjustment date; names whose fetch failed are retried next time.
+    const everyName = symbols.every(t => need.some(x => x.t === t)), failedSet = new Set(failed);
+    const stillPending = everyName ? failed.filter(t => need.some(x => x.t === t)) : [...pending].filter(t => !need.some(x => x.t === t) || failedSet.has(t));
+    state.asOf = { session: Q, ts, refreshedAt: new Date().toISOString(), requests: run.n, reconciled: everyName ? Q : (state.asOf.reconciled || hist.dates[0]), pending: [...new Set(stillPending)] };
     let saved = true;
     try { await Promise.all([idb.set('history', encodeBundle(next)), idb.set('meta', state.asOf)]); } catch { saved = false; }
     state.busy = false; progress('');

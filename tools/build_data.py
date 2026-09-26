@@ -14,7 +14,7 @@ history:  ~3 years of daily dividend- and split-adjusted closes per ticker (so
           when the user presses Refresh and rescales past values when FMP's
           adjusted series says a dividend or split has occurred since.
 
-Raw per-symbol downloads are cached in .cache/history/ so a re-encode does not
+Raw per-symbol downloads are cached in .cache/adjusted/ so a re-encode does not
 re-download. Python 3.9+, standard library only.
 """
 import json

@@ -11,7 +11,9 @@ const BASE = process.argv[2] || 'http://127.0.0.1:8000/';
 const SHOTS = process.argv[3] || '';
 const seed = JSON.parse(readFileSync(new URL('../data/history.json', import.meta.url)));
 const universe = JSON.parse(readFileSync(new URL('../data/universe.json', import.meta.url)));
-const lastClose = Object.fromEntries(Object.entries(seed.px).map(([t, c]) => { const p = decodePrices(c); return [t, p[p.length - 1]]; }));
+const seedPx = Object.fromEntries(Object.entries(seed.px).map(([t, c]) => [t, decodePrices(c)]));
+const seedIdx = new Map(seed.dates.map((d, i) => [d, i]));
+const lastClose = Object.fromEntries(Object.entries(seedPx).map(([t, p]) => [t, p[p.length - 1]]));
 const L = seed.dates[seed.dates.length - 1];
 const QB = Math.ceil(universe.stocks.length / 100);   // quote batches per refresh
 let failures = 0;
@@ -57,7 +59,7 @@ const rows = page => page.locator('.list .row').evaluateAll(els => els.map(e => 
 const noOverflow = page => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1);
 
 /** Mock FMP for a scenario: quote session date/time, optional history gap dates, optional error mode. */
-function mockFmp(page, { date = L, hh = 16, mm = 0, sessions = [], splits = {}, divs = {}, exDate = '9999', mode = 'ok', keySeen }) {
+function mockFmp(page, { date = L, hh = 16, mm = 0, sessions = [], splits = {}, divs = {}, exDate = '9999', quoteBump = {}, mode = 'ok', keySeen }) {
   const calls = { quote: 0, history: 0, historyFrom: {}, hist429: 0 };
   return page.route('https://financialmodelingprep.com/**', route => {
     const u = new URL(route.request().url());
@@ -69,7 +71,7 @@ function mockFmp(page, { date = L, hh = 16, mm = 0, sessions = [], splits = {}, 
     if (u.pathname.endsWith('/batch-quote')) {
       calls.quote++;
       const syms = u.searchParams.get('symbols').split(',');
-      return route.fulfill({ json: syms.map(s => ({ symbol: s, price: +((lastClose[s] || 50) * (splits[s] || 1.01)).toFixed(2), previousClose: +((lastClose[s] || 50) * (splits[s] || 1)).toFixed(2), timestamp: nyTs(date, hh, mm) })) });
+      return route.fulfill({ json: syms.map(s => ({ symbol: s, price: +((lastClose[s] || 50) * (splits[s] || (quoteBump[s] || 1.01))).toFixed(2), previousClose: +((lastClose[s] || 50) * (splits[s] || 1)).toFixed(2), timestamp: nyTs(date, hh, mm) })) });
     }
     // Daily history: 'light' (calendar references) or 'dividend-adjusted' (per-name series). A
     // name in `divs` went ex-dividend on `exDate`: every adjusted value before that date is scaled
@@ -80,9 +82,10 @@ function mockFmp(page, { date = L, hh = 16, mm = 0, sessions = [], splits = {}, 
       const s = u.searchParams.get('symbol'), from = u.searchParams.get('from'), to = u.searchParams.get('to') || '9999';
       calls.historyFrom[s] = from;
       const all = [...seed.dates, ...sessions].filter(d => d >= from && d <= to);
-      const base = (lastClose[s] || 50) * (splits[s] || 1);
-      const value = d => +(base * (d > L ? 1.01 : 1) * (adj && d < exDate ? (divs[s] || 1) : 1)).toFixed(2);
-      return route.fulfill({ json: all.map(d => adj ? { symbol: s, date: d, adjClose: value(d), volume: 1 } : { symbol: s, date: d, price: value(d), volume: 1 }).reverse() });
+      // Seed sessions return the seed's own (adjusted) value; later sessions trade at 1.01 x the last close, like the quotes.
+      const value = d => { const v = seedIdx.has(d) && seedPx[s] ? seedPx[s][seedIdx.get(d)] : (lastClose[s] || 50) * 1.01;
+        return v === null ? 0 : +(v * (splits[s] || 1) * (adj && d < exDate ? (divs[s] || 1) : 1)).toFixed(2); };
+      return route.fulfill({ json: all.map(d => adj ? { symbol: s, date: d, adjClose: value(d), volume: 1 } : { symbol: s, date: d, price: value(d), volume: 1 }).filter(r => (r.adjClose ?? r.price) > 0).reverse() });
     }
     return route.fulfill({ status: 404, body: '[]' });
   }).then(() => calls);
@@ -269,7 +272,8 @@ function mockFmp(page, { date = L, hh = 16, mm = 0, sessions = [], splits = {}, 
   await page.addInitScript(() => localStorage.setItem('fmpKey', JSON.stringify('k')));
   await load(page);
   const T0 = await page.evaluate(() => document.querySelectorAll('.list .row').length);
-  const calls = await mockFmp(page, { date: '2026-09-28', hh: 10, mm: 30, sessions: ['2026-09-28'], splits: { AAPL: 0.25 } });
+  // MU's intraday quote sits 2% above the close FMP will later report for that session.
+  const calls = await mockFmp(page, { date: '2026-09-28', hh: 10, mm: 30, sessions: ['2026-09-28'], splits: { AAPL: 0.25 }, quoteBump: { MU: 1.03 } });
   const toast = await afterToast(page, () => page.click('#btn-refresh'));
   check(/Sep 28 10:30 AM/.test(toast) && toast.includes(`${QB + 3} requests`), `next-session live refresh: ${toast}`);
   check(calls.quote === QB && calls.history === 3 && calls.historyFrom.AAPL === seed.dates[0], `2 reference calls + 1 full re-download for the split (${JSON.stringify(calls.historyFrom)})`);
@@ -277,7 +281,7 @@ function mockFmp(page, { date = L, hh = 16, mm = 0, sessions = [], splits = {}, 
   const readStored = () => page.evaluate(() => new Promise(res => { const q = indexedDB.open('momentum', 1); q.onsuccess = () => { const r = q.result.transaction('kv').objectStore('kv').get('history'); r.onsuccess = () => res(r.result); }; }));
   let stored = await readStored();
   const muIntraday = decodePrices(stored.px.MU).at(-1);
-  check(stored.dates.at(-1) === '2026-09-28' && Math.abs(muIntraday - lastClose.MU * 1.01) < 0.011, `intraday quote stored for Sep 28 (${muIntraday})`);
+  check(stored.dates.at(-1) === '2026-09-28' && Math.abs(muIntraday - lastClose.MU * 1.03) < 0.011, `intraday quote stored for Sep 28 (${muIntraday})`);
   await page.unroute('https://financialmodelingprep.com/**');
   // The next session's refresh replaces that intraday snapshot with the official close (previousClose here).
   const callsB = await mockFmp(page, { date: '2026-09-29', hh: 16, mm: 0, sessions: ['2026-09-28', '2026-09-29'], splits: { AAPL: 0.25 } });
@@ -289,14 +293,17 @@ function mockFmp(page, { date = L, hh = 16, mm = 0, sessions = [], splits = {}, 
   await page.unroute('https://financialmodelingprep.com/**');
   // a 3-session gap: per-name history for every ticker
   const vzBefore = decodePrices((await readStored()).px.VZ);
-  const calls2 = await mockFmp(page, { date: '2026-10-02', hh: 16, mm: 0, sessions: ['2026-09-28', '2026-09-29', '2026-09-30', '2026-10-01', '2026-10-02'], splits: { AAPL: 0.25 }, divs: { VZ: 0.98 }, exDate: '2026-09-30' });
+  const calls2 = await mockFmp(page, { date: '2026-10-02', hh: 16, mm: 0, sessions: ['2026-09-28', '2026-09-29', '2026-09-30', '2026-10-01', '2026-10-02'], splits: { AAPL: 0.25 }, divs: { VZ: 0.98 }, exDate: '2026-09-29' });   // ex on a session that quotes-only refreshes appended
   const toast2 = await afterToast(page, () => page.click('#btn-refresh'), '', 60000);
   check(/Oct 2 close/.test(toast2), `gap refresh: ${toast2}`);
   const vzAfter = decodePrices((await readStored()).px.VZ);
   check(Math.abs(vzAfter[0] / vzBefore[0] - 0.98) < 1e-3 && Math.abs(vzAfter[100] / vzBefore[100] - 0.98) < 1e-3, `dividend reconciliation rescales VZ's earlier history by 0.98 (${vzBefore[0]} -> ${vzAfter[0]})`);
   check(Math.abs(vzAfter.at(-1) - lastClose.VZ * 1.01) < 0.011, 'latest VZ value is still the quote');
-  const mu2 = decodePrices((await readStored()).px.MU);
-  check(Math.abs(mu2[0] - decodePrices(seed.px.MU)[0]) < 1e-9, 'a name without a dividend is not rescaled');
+  const st2 = await readStored(), mu2 = decodePrices(st2.px.MU);
+  check(Math.abs(mu2[0] - decodePrices(seed.px.MU)[0]) < 1e-9, 'a name without a dividend is not rescaled (a quote/close mismatch is not a dividend)');
+  check(Math.abs(mu2[st2.dates.indexOf('2026-09-28')] - lastClose.MU * 1.01) < 0.011, 'the mismatched intraday quote for Sep 28 is replaced by the adjusted close');
+  const meta = await page.evaluate(() => new Promise(res => { const q = indexedDB.open('momentum', 1); q.onsuccess = () => { const r = q.result.transaction('kv').objectStore('kv').get('meta'); r.onsuccess = () => res(r.result); }; }));
+  check(meta.reconciled === '2026-10-02' && meta.pending.length === 0, `full pass recorded: adjusted through ${meta.reconciled}`);
   check(calls2.quote === QB && calls2.history === universe.stocks.length + 2, `gap refresh requests: ${calls2.quote} + ${calls2.history} (2 references + ${universe.stocks.length} names)`);
   check((await readStored()).dates.slice(-4).join(',') === '2026-09-29,2026-09-30,2026-10-01,2026-10-02', 'gap sessions inserted in order');
   check(Math.abs((await page.evaluate(() => document.querySelectorAll('.list .row').length)) - T0) < 10, 'ranking still covers the universe');
